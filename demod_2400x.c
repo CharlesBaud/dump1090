@@ -421,6 +421,7 @@ static int emitFrame(const struct mag_buf *mag, const struct candidate *c,
         unsigned q1, rho2;
         cc = *c;
         const int qb = c->quality / 16 < 16 ? c->quality / 16 : 16;
+        Modes.stats_current.demod_coherent_tried++;
         if (coherentDecode(iq, mag->validLength, c->pos, cc.msg, &q1, &cc.quality2, &rho2) == 0) {
             coh_stats.attempts++;
             coh_stats.q_attempts[qb]++;
@@ -428,10 +429,12 @@ static int emitFrame(const struct mag_buf *mag, const struct candidate *c,
         else
             rho2 = 0;
         if (rho2 >= COHERENT_RHO2) {
+            Modes.stats_current.demod_coherent_coherent++;
             coh_stats.coherent++;
             coh_stats.q_coherent[qb]++;
             const int s2 = scoreModesMessage(cc.msg);
             if (s2 >= SR_ACCEPT_THRESHOLD) {
+                Modes.stats_current.demod_coherent_rescued++;
                 coh_stats.rescued++;
                 coh_stats.q_rescued[qb]++;
                 if (scoreIsKnown(s2))

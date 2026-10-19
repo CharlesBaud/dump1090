@@ -89,6 +89,11 @@ void display_stats(struct stats *st) {
         printf("    %12u accepted with correct CRC\n",                st->demod_accepted[0]);
         for (j = 1; j <= Modes.nfix_crc; ++j)
             printf("    %12u accepted with %d-bit error repaired\n", st->demod_accepted[j], j);
+#ifdef DEMOD_2400X_COHERENT
+        printf("  %12u coherent decodes tried\n",                      st->demod_coherent_tried);
+        printf("    %12u with a coherent carrier\n",                   st->demod_coherent_coherent);
+        printf("    %12u rescued (included in accepted above)\n",      st->demod_coherent_rescued);
+#endif
 
         if (st->noise_power_sum > 0 && st->noise_power_count > 0) {
             printf("  %5.1f dBFS noise power\n",
@@ -332,6 +337,11 @@ void add_stats(const struct stats *st1, const struct stats *st2, struct stats *t
     target->demod_rejected_unknown_icao = st1->demod_rejected_unknown_icao + st2->demod_rejected_unknown_icao;
     for (i = 0; i < MODES_MAX_BITERRORS+1; ++i)
         target->demod_accepted[i]  = st1->demod_accepted[i] + st2->demod_accepted[i];
+#ifdef DEMOD_2400X_COHERENT
+    target->demod_coherent_tried = st1->demod_coherent_tried + st2->demod_coherent_tried;
+    target->demod_coherent_coherent = st1->demod_coherent_coherent + st2->demod_coherent_coherent;
+    target->demod_coherent_rescued = st1->demod_coherent_rescued + st2->demod_coherent_rescued;
+#endif
     target->demod_modeac = st1->demod_modeac + st2->demod_modeac;
 
     target->samples_processed = st1->samples_processed + st2->samples_processed;

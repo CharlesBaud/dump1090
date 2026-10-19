@@ -163,6 +163,18 @@ creates an aircraft, so the risk of false aircraft is the same as before.
 Most attempts are not coherent: they are noise, overlapping frames, or
 aircraft whose transmitters aren't phase-stable.
 
+### Live counts
+
+`stats.json` (in the `--write-json` directory) has the coherent counts in
+each period's `local` section, and `--stats` prints them too:
+
+    "coherent":{"tried":654794,"coherent":106548,"rescued":7530}
+
+* `tried`: frames that failed the CRC and passed the quality gate;
+* `coherent`: of those, frames whose carrier passed the rho2 gate;
+* `rescued`: of those, frames whose coherent bits passed the CRC. They are
+  also counted in `accepted`.
+
 ## Limitations
 
 * **About a quarter of aircraft are not coherent.** Older transponders with

@@ -29,9 +29,10 @@
 
 // Coherent second pass statistics (experiment)
 static struct {
-    unsigned long attempts, rescued, rescued_known, rescued_unknown;
+    unsigned long attempts, coherent, rescued, rescued_known, rescued_unknown;
     unsigned long diag_frames, diag_mag_err[4], diag_coh_err[4], diag_coh_worse, diag_coh_better;
     double seconds;
+    unsigned long q_attempts[17], q_coherent[17], q_rescued[17];    // by magnitude quality / 16
 } coh_stats;
 
 static double cohNow(void)
@@ -44,11 +45,15 @@ static double cohNow(void)
 static void cohReport(void)
 {
     const struct coherent_config *cfg = coherentConfig();
-    fprintf(stderr, "coherent: estimator %s, refine %d, gate %u\n",
-            cfg->estimator ? "DFT" : "delay-multiply", cfg->refine, cfg->gate);
-    fprintf(stderr, "coherent: %lu attempts, %lu rescued (%lu known aircraft, %lu unknown), %.0f ms\n",
-            coh_stats.attempts, coh_stats.rescued, coh_stats.rescued_known, coh_stats.rescued_unknown,
+    fprintf(stderr, "coherent: quality gate %u, rho2 gate %.2f\n", cfg->gate, cfg->rho2);
+    fprintf(stderr, "coherent: %lu attempts, %lu coherent (rho2), %lu rescued (%lu known aircraft, %lu unknown), %.0f ms\n",
+            coh_stats.attempts, coh_stats.coherent, coh_stats.rescued, coh_stats.rescued_known, coh_stats.rescued_unknown,
             coh_stats.seconds * 1e3);
+    fprintf(stderr, "coherent by magnitude quality: quality attempts coherent rescued\n");
+    for (int b = 0; b < 17; b++)
+        if (coh_stats.q_attempts[b])
+            fprintf(stderr, "  %3d-%3d %8lu %7lu %6lu\n", 16 * b, 16 * b + 15,
+                    coh_stats.q_attempts[b], coh_stats.q_coherent[b], coh_stats.q_rescued[b]);
     if (coh_stats.diag_frames)
         fprintf(stderr, "coherent diag: %lu accepted frames; bit errors 0/1/2/3+: magnitude %lu/%lu/%lu/%lu, "
                 "coherent %lu/%lu/%lu/%lu; coherent better %lu, worse %lu\n",
@@ -404,12 +409,22 @@ static int emitFrame(const struct mag_buf *mag, const struct candidate *c,
         }
         const double t0 = cohNow();
         unsigned q1;
+        float rho2;
         cc = *c;
-        if (coherentDecode(iq, mag->validLength, c->pos, c->msg, cc.msg, &q1, &cc.quality2) == 0) {
+        const int qb = c->quality / 16 < 16 ? c->quality / 16 : 16;
+        if (coherentDecode(iq, mag->validLength, c->pos, cc.msg, &q1, &cc.quality2, &rho2) == 0) {
             coh_stats.attempts++;
+            coh_stats.q_attempts[qb]++;
+        }
+        else
+            rho2 = 0;
+        if (rho2 >= coh->rho2) {
+            coh_stats.coherent++;
+            coh_stats.q_coherent[qb]++;
             const int s2 = scoreModesMessage(cc.msg);
             if (s2 >= SR_ACCEPT_THRESHOLD) {
                 coh_stats.rescued++;
+                coh_stats.q_rescued[qb]++;
                 if (scoreIsKnown(s2))
                     coh_stats.rescued_known++;
                 else
@@ -459,7 +474,8 @@ static int emitFrame(const struct mag_buf *mag, const struct candidate *c,
         }
         uint8_t cmsg[MODES_LONG_MSG_BYTES];
         unsigned q1, q2;
-        if (coherentDecode(iq, mag->validLength, c->pos, c->msg, cmsg, &q1, &q2) == 0) {
+        float rho2;
+        if (coherentDecode(iq, mag->validLength, c->pos, cmsg, &q1, &q2, &rho2) == 0 && rho2 >= coh->rho2) {
             const unsigned em = bitErrors(c->msg, mm.msg, mm.msgbits), ec = bitErrors(cmsg, mm.msg, mm.msgbits);
             coh_stats.diag_frames++;
             coh_stats.diag_mag_err[em < 3 ? em : 3]++;

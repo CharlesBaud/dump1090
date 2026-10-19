@@ -1,4 +1,4 @@
-# Reader for the chip-sample dump written by dump1090 with COH_SAMPLES=file
+# Reader for the chip-sample dump written by dump1090 built with -DCOHERENT_SAMPLES=\"file\"
 # (experiment branch demod-2400x-coherent). See dumpFrame() in demod_2400x.c.
 #
 #   import coh_samples

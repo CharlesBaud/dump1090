@@ -25,7 +25,8 @@
 #include "dsp/helpers/demod2400x_coeffs.h"
 #ifdef DEMOD_2400X_COHERENT
 // Coherent second pass (demod_2400x_coherent.c): frames whose magnitude bits fail
-// the CRC are decoded again coherently. Statistics are printed at exit with COH_STATS=1.
+// the CRC are decoded again coherently. Statistics are printed at exit with COHERENT_STATS
+// (settings in demod_2400x_coherent.h).
 #include "demod_2400x_coherent.h"
 
 #include <time.h>
@@ -132,7 +133,7 @@ struct candidate {
 
 
 #ifdef DEMOD_2400X_COHERENT
-// Sample dump for offline algorithm development (COH_SAMPLES=file). One record per
+// Sample dump for offline algorithm development (COHERENT_SAMPLES). One record per
 // frame, little-endian:
 //   int32 accepted (1: CRC-checked frame, 0: candidate that failed)
 //   int32 pos (12 MHz position chosen by the magnitude decoder)
@@ -158,11 +159,11 @@ static void dumpFrame(const int16_t *iq, unsigned iq_len, const struct candidate
 {
     static int init;
     if (!init) {
-        const char *s = getenv("COH_SAMPLES");
+        const char *s = COHERENT_SAMPLES;
         init = 1;
         if (s && (dump.f = fopen(s, "wb")) == NULL)
             perror(s);
-        dump.gate = (s = getenv("COH_SAMPLES_GATE")) ? (unsigned) atoi(s) : 257;   // failed candidates: off
+        dump.gate = COHERENT_SAMPLES_GATE;
         if (dump.f)
             atexit(dumpReport);
     }
@@ -413,7 +414,7 @@ static int emitFrame(const struct mag_buf *mag, const struct candidate *c,
         static int registered;
         if (!registered) {
             registered = 1;
-            if (getenv("COH_STATS"))
+            if (COHERENT_STATS)
                 atexit(cohReport);
         }
         const double t0 = cohNow();
@@ -492,7 +493,7 @@ static int emitFrame(const struct mag_buf *mag, const struct candidate *c,
             coh_stats.diag_frames++;
             coh_stats.diag_mag_err[em < 3 ? em : 3]++;
             coh_stats.diag_coh_err[ec < 3 ? ec : 3]++;
-            if (getenv("COH_DUMP")) {
+            if (COHERENT_DUMP) {
                 extern float coh_last_freq_hz, coh_last_amp;
                 fprintf(stderr, "D %.0f %.0f %u %u %u %d %06x\n", coh_last_freq_hz, coh_last_amp, em, ec,
                         c->quality, mm.msgtype, mm.addr);

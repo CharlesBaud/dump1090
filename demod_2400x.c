@@ -22,6 +22,62 @@
 #include <assert.h>
 
 #include "dsp/helpers/demod2400x_dsp.h"
+#include "dsp/helpers/demod2400x_coeffs.h"
+#include "demod_2400x_coherent.h"
+
+#include <time.h>
+
+// Coherent second pass statistics (experiment)
+static struct {
+    unsigned long attempts, rescued, rescued_known, rescued_unknown;
+    unsigned long diag_frames, diag_mag_err[4], diag_coh_err[4], diag_coh_worse, diag_coh_better;
+    double seconds;
+} coh_stats;
+
+static double cohNow(void)
+{
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return t.tv_sec + 1e-9 * t.tv_nsec;
+}
+
+static void cohReport(void)
+{
+    const struct coherent_config *cfg = coherentConfig();
+    fprintf(stderr, "coherent: estimator %s, refine %d, gate %u\n",
+            cfg->estimator ? "DFT" : "delay-multiply", cfg->refine, cfg->gate);
+    fprintf(stderr, "coherent: %lu attempts, %lu rescued (%lu known aircraft, %lu unknown), %.0f ms\n",
+            coh_stats.attempts, coh_stats.rescued, coh_stats.rescued_known, coh_stats.rescued_unknown,
+            coh_stats.seconds * 1e3);
+    if (coh_stats.diag_frames)
+        fprintf(stderr, "coherent diag: %lu accepted frames; bit errors 0/1/2/3+: magnitude %lu/%lu/%lu/%lu, "
+                "coherent %lu/%lu/%lu/%lu; coherent better %lu, worse %lu\n",
+                coh_stats.diag_frames,
+                coh_stats.diag_mag_err[0], coh_stats.diag_mag_err[1], coh_stats.diag_mag_err[2], coh_stats.diag_mag_err[3],
+                coh_stats.diag_coh_err[0], coh_stats.diag_coh_err[1], coh_stats.diag_coh_err[2], coh_stats.diag_coh_err[3],
+                coh_stats.diag_coh_better, coh_stats.diag_coh_worse);
+}
+
+static int scoreIsKnown(int score)
+{
+    switch (score) {
+    case SR_UNRELIABLE_KNOWN: case SR_DF18_2ERROR_KNOWN: case SR_DF17_2ERROR_KNOWN:
+    case SR_DF11_IID_1ERROR_KNOWN: case SR_DF11_ACQ_1ERROR_KNOWN: case SR_DF11_IID_KNOWN:
+    case SR_DF18_1ERROR_KNOWN: case SR_DF17_1ERROR_KNOWN: case SR_DF11_ACQ_KNOWN:
+    case SR_DF18_KNOWN: case SR_DF17_KNOWN:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+static unsigned bitErrors(const uint8_t *a, const uint8_t *b, int bits)
+{
+    unsigned n = 0;
+    for (int i = 0; i < bits / 8; i++)
+        n += (unsigned) __builtin_popcount(a[i] ^ b[i]);
+    return n;
+}
 
 // The metric index is this many 12 MHz samples (3 input samples, the FIR delay)
 // before the true start of the preamble
@@ -66,6 +122,69 @@ struct candidate {
     uint8_t msg[MODES_LONG_MSG_BYTES];  // demodulated frame
 };
 
+
+// Sample dump for offline algorithm development (COH_SAMPLES=file). One record per
+// frame, little-endian:
+//   int32 accepted (1: CRC-checked frame, 0: candidate that failed)
+//   int32 pos (12 MHz position chosen by the magnitude decoder)
+//   uint32 quality, quality2 (magnitude, first and second 56 bits)
+//   int32 score; uint32 addr (0 if not accepted)
+//   uint8 mag_msg[14] (magnitude bits), uint8 good_msg[14] (corrected bits if accepted)
+//   int32 chips[240][2]: complex filter outputs (I, Q) at pos + 6k, before rounding;
+//   k = 0..15 preamble, 16 + 2i and 17 + 2i the two chips of bit i
+// Each chip is checked against the magnitude the decoder used (same rounding and sqrt).
+static struct { FILE *f; unsigned gate; unsigned long written, accepted, rejected, checked, mismatches; } dump;
+
+static void dumpReport(void)
+{
+    fprintf(stderr, "samples: %lu records (%lu accepted, %lu failed candidates); "
+            "%lu chips checked against udata, %lu mismatches\n",
+            dump.written, dump.accepted, dump.rejected, dump.checked, dump.mismatches);
+    if (dump.f)
+        fclose(dump.f);
+}
+
+static void dumpFrame(const int16_t *iq, unsigned iq_len, const struct candidate *c, int accepted,
+                      int score, uint32_t addr, const uint8_t *good_msg, const uint16_t *udata, int nt)
+{
+    static int init;
+    if (!init) {
+        const char *s = getenv("COH_SAMPLES");
+        init = 1;
+        if (s && (dump.f = fopen(s, "wb")) == NULL)
+            perror(s);
+        dump.gate = (s = getenv("COH_SAMPLES_GATE")) ? (unsigned) atoi(s) : 257;   // failed candidates: off
+        if (dump.f)
+            atexit(dumpReport);
+    }
+    if (!dump.f || (!accepted && c->quality < dump.gate))
+        return;
+
+    int32_t chips[COHERENT_CHIPS][2];
+    if (coherentChips(iq, iq_len, c->pos, chips, COHERENT_CHIPS) < 0)
+        return;
+
+    // Same rounding and sqrt as upsample12: must equal what the magnitude decoder saw
+    const int stride = NU_STRIDE(nt);
+    for (int k = 0; k < COHERENT_CHIPS; k++) {
+        const int t = c->pos + 6 * k;
+        const int32_t si = (chips[k][0] + UPSAMPLE_ROUND) >> UPSAMPLE_SHIFT;
+        const int32_t sq = (chips[k][1] + UPSAMPLE_ROUND) >> UPSAMPLE_SHIFT;
+        const unsigned m = demod_isqrt((uint32_t) (si * si) + (uint32_t) (sq * sq));
+        dump.checked++;
+        if (t < nt && m != udata[(t % 6) * stride + t / 6])
+            dump.mismatches++;
+    }
+
+    const int32_t hdr[6] = { accepted, c->pos, (int32_t) c->quality, (int32_t) c->quality2, score, (int32_t) addr };
+    static const uint8_t zeros[14];
+    fwrite(hdr, sizeof(hdr), 1, dump.f);
+    fwrite(c->msg, 1, 14, dump.f);
+    fwrite(good_msg ? good_msg : zeros, 1, 14, dump.f);
+    fwrite(chips, sizeof(chips), 1, dump.f);
+    dump.written++;
+    if (accepted) dump.accepted++; else dump.rejected++;
+}
 
 // Allocate holding buffers
 static int allocBuffer(int nsize, int *osize, void **bptr) {
@@ -270,9 +389,40 @@ static int emitFrame(const struct mag_buf *mag, const struct candidate *c,
 {
     static const struct modesMessage zeroMessage;
     struct modesMessage mm;
+    const struct coherent_config *coh = coherentConfig();
+    const struct candidate *mag_c = c;
+    struct candidate cc;
 
     int score = scoreModesMessage(c->msg);
+
+    // Coherent second pass for frames the magnitude bits don't decode
+    if (score < SR_ACCEPT_THRESHOLD && coh->enabled && c->quality >= coh->gate) {
+        static int registered;
+        if (!registered) {
+            registered = 1;
+            atexit(cohReport);
+        }
+        const double t0 = cohNow();
+        unsigned q1;
+        cc = *c;
+        if (coherentDecode(iq, mag->validLength, c->pos, c->msg, cc.msg, &q1, &cc.quality2) == 0) {
+            coh_stats.attempts++;
+            const int s2 = scoreModesMessage(cc.msg);
+            if (s2 >= SR_ACCEPT_THRESHOLD) {
+                coh_stats.rescued++;
+                if (scoreIsKnown(s2))
+                    coh_stats.rescued_known++;
+                else
+                    coh_stats.rescued_unknown++;
+                c = &cc;
+                score = s2;
+            }
+        }
+        coh_stats.seconds += cohNow() - t0;
+    }
+
     if (score < SR_ACCEPT_THRESHOLD) {
+        dumpFrame(iq, mag->validLength, c, 0, score, 0, NULL, st->udata, nt);
         if (score >= SR_UNKNOWN_THRESHOLD)
             Modes.stats_current.demod_rejected_unknown_icao++;
         else
@@ -296,6 +446,33 @@ static int emitFrame(const struct mag_buf *mag, const struct candidate *c,
         return 0;
     }
     Modes.stats_current.demod_accepted[mm.correctedbits]++;
+    if (c == mag_c)
+        dumpFrame(iq, mag->validLength, c, 1, score, mm.addr, mm.msg, st->udata, nt);
+
+    // Diagnostic: bit errors of the magnitude and coherent decoders on frames whose
+    // correct bits are known (accepted by the magnitude bits alone)
+    if (coh->diag && c == mag_c) {
+        static int registered;
+        if (!registered) {
+            registered = 1;
+            atexit(cohReport);
+        }
+        uint8_t cmsg[MODES_LONG_MSG_BYTES];
+        unsigned q1, q2;
+        if (coherentDecode(iq, mag->validLength, c->pos, c->msg, cmsg, &q1, &q2) == 0) {
+            const unsigned em = bitErrors(c->msg, mm.msg, mm.msgbits), ec = bitErrors(cmsg, mm.msg, mm.msgbits);
+            coh_stats.diag_frames++;
+            coh_stats.diag_mag_err[em < 3 ? em : 3]++;
+            coh_stats.diag_coh_err[ec < 3 ? ec : 3]++;
+            if (getenv("COH_DUMP")) {
+                extern float coh_last_freq_hz, coh_last_amp;
+                fprintf(stderr, "D %.0f %.0f %u %u %u %d %06x\n", coh_last_freq_hz, coh_last_amp, em, ec,
+                        c->quality, mm.msgtype, mm.addr);
+            }
+            if (ec < em) coh_stats.diag_coh_better++;
+            if (ec > em) coh_stats.diag_coh_worse++;
+        }
+    }
 
     // Timestamp at the end of bit 56, even for 112-bit frames (Beast / Radarcape convention)
     int tpos = fineTiming(c->pos, mm.msg, mm.msgbits, st->udata, nt);

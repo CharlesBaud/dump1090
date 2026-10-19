@@ -345,9 +345,9 @@ void STARCH_IMPL(coherent_decode, generic) (const int16_t * restrict iq, int pos
     for (int i = 1; i < 8; i++)
         P[i] = coh_rot(P[i - 1], rb);
     const coh_c16 rb8 = coh_rot(P[7], rb);
-    for (int i = 8; i < COH_BITS; i++)
+    for (int i = 8; i < COH_EST_BITS; i++)                         // the rest after the gate
         P[i] = coh_rot(P[i - 8], rb8);
-    for (int i = 0; i < COH_BITS; i++)
+    for (int i = 0; i < COH_EST_BITS; i++)
         Q[i] = coh_rot(rc, P[i]);
 
     // Correlation over the first 56 bits: with the rotation removed, the pair sums of a
@@ -372,6 +372,10 @@ void STARCH_IMPL(coherent_decode, generic) (const int16_t * restrict iq, int pos
     // projecting each de-rotated chip on h keeps the signal and only the noise in phase
     // with it; the pulse is in the chip with the larger projection
     coh_chips_generic(iq, pos, COH_EST_BITS, COH_BITS - COH_EST_BITS, cs, a, b);
+    for (int i = COH_EST_BITS; i < COH_BITS; i++) {
+        P[i] = coh_rot(P[i - 8], rb8);
+        Q[i] = coh_rot(rc, P[i]);
+    }
     int16_t gre, gim;
     coh_channel16(hre, him, &gre, &gim);
     uint32_t qual[2] = { 0, 0 }, pw[2] = { 0, 0 };

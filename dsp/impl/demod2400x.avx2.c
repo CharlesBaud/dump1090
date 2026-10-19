@@ -711,20 +711,22 @@ void STARCH_IMPL(coherent_decode, avx2) (const int16_t * restrict iq, int pos, u
     }
     const int16_t r8r = (int16_t) (coh_mulq15(Pr[7], rbr) - coh_mulq15(Pi[7], rbi));
     const int16_t r8i = (int16_t) (coh_mulq15(Pr[7], rbi) + coh_mulq15(Pi[7], rbr));
-    for (int i = 8; i < COH_BITS; i += 8) {
-        __m128i rr, ri;
-        coh_rot_sse(_mm_loadu_si128((const __m128i *) (Pr + i - 8)), _mm_loadu_si128((const __m128i *) (Pi + i - 8)),
-                    _mm_set1_epi16(r8r), _mm_set1_epi16(r8i), &rr, &ri);
-        _mm_storeu_si128((__m128i *) (Pr + i), rr);
-        _mm_storeu_si128((__m128i *) (Pi + i), ri);
+    // P and Q for bits [from, to), 8 at a time (the second half only after the gate)
+#define COH_PHASORS(from, to)                                                                                   \
+    for (int i = (from); i < (to); i += 8) {                                                                    \
+        __m128i rr, ri;                                                                                         \
+        if (i >= 8) {                                                                                           \
+            coh_rot_sse(_mm_loadu_si128((const __m128i *) (Pr + i - 8)), _mm_loadu_si128((const __m128i *) (Pi + i - 8)), \
+                        _mm_set1_epi16(r8r), _mm_set1_epi16(r8i), &rr, &ri);                                    \
+            _mm_storeu_si128((__m128i *) (Pr + i), rr);                                                         \
+            _mm_storeu_si128((__m128i *) (Pi + i), ri);                                                         \
+        }                                                                                                       \
+        coh_rot_sse(_mm_loadu_si128((const __m128i *) (Pr + i)), _mm_loadu_si128((const __m128i *) (Pi + i)),   \
+                    _mm_set1_epi16(rcr), _mm_set1_epi16(rci), &rr, &ri);                                        \
+        _mm_storeu_si128((__m128i *) (Qr + i), rr);                                                             \
+        _mm_storeu_si128((__m128i *) (Qi + i), ri);                                                             \
     }
-    for (int i = 0; i < COH_BITS; i += 8) {
-        __m128i rr, ri;
-        coh_rot_sse(_mm_loadu_si128((const __m128i *) (Pr + i)), _mm_loadu_si128((const __m128i *) (Pi + i)),
-                    _mm_set1_epi16(rcr), _mm_set1_epi16(rci), &rr, &ri);
-        _mm_storeu_si128((__m128i *) (Qr + i), rr);
-        _mm_storeu_si128((__m128i *) (Qi + i), ri);
-    }
+    COH_PHASORS(0, COH_EST_BITS)
 
 #define COH_LD(p) _mm_loadu_si128((const __m128i *) (p))
     // Correlation over the first 56 bits
@@ -755,6 +757,8 @@ void STARCH_IMPL(coherent_decode, avx2) (const int16_t * restrict iq, int pos, u
         _mm_storeu_si128((__m128i *) (br + i), coh_to16_avx2(b32r + i, cs));
         _mm_storeu_si128((__m128i *) (bi + i), coh_to16_avx2(b32i + i, cs));
     }
+    COH_PHASORS(COH_EST_BITS, COH_BITS)
+#undef COH_PHASORS
     int16_t gre, gim;
     coh_channel16(h_re, h_im, &gre, &gim);
     const __m128i gr = _mm_set1_epi16(gre), gi = _mm_set1_epi16(gim);

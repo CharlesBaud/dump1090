@@ -699,12 +699,39 @@ void coh_chip_neon(const int16_t *iq, int t, const int16x8_t *cv, int32_t *re, i
     *im = coh_hsum_s32_neon(sq);
 }
 
-// Chips of bits first .. first+n-1 (n a multiple of 4), int32, as [a.re, b.re] pairs etc.
+#ifdef __aarch64__
+// Partial sums (4 lanes each) of one chip's I and Q, before the horizontal add
+static inline __attribute__((always_inline))
+void coh_chip_partial_neon(const int16_t *iq, int t, const int16x8_t *cv, int32x4_t *si, int32x4_t *sq)
+{
+    const int n = t / 5, c = t % 5;
+    const int16x8x2_t v = vld2q_s16(iq + 2 * n);
+    *si = vmlal_high_s16(vmull_s16(vget_low_s16(v.val[0]), vget_low_s16(cv[c])), v.val[0], cv[c]);
+    *sq = vmlal_high_s16(vmull_s16(vget_low_s16(v.val[1]), vget_low_s16(cv[c])), v.val[1], cv[c]);
+}
+#endif
+
+// Chips of bits first .. first+n-1 (n even), int32, in chip order (a, b of each bit)
 static void coh_chips32_neon(const int16_t *iq, int pos, int first, int n, const int16x8_t *cv,
                              int32_t *r32, int32_t *i32)
 {
+#ifdef __aarch64__
+    // 4 chips at a time: instead of a full horizontal add per chip, three pairwise adds
+    // reduce the four chips' partial sums into one vector [chip0, chip1, chip2, chip3]
+    for (int k = 2 * first; k < 2 * (first + n); k += 4) {
+        const int t = pos + COH_DATA_OFFSET + 6 * k;
+        int32x4_t i0, i1, i2, i3, q0, q1, q2, q3;
+        coh_chip_partial_neon(iq, t, cv, &i0, &q0);
+        coh_chip_partial_neon(iq, t + 6, cv, &i1, &q1);
+        coh_chip_partial_neon(iq, t + 12, cv, &i2, &q2);
+        coh_chip_partial_neon(iq, t + 18, cv, &i3, &q3);
+        vst1q_s32(r32 + k, vpaddq_s32(vpaddq_s32(i0, i1), vpaddq_s32(i2, i3)));
+        vst1q_s32(i32 + k, vpaddq_s32(vpaddq_s32(q0, q1), vpaddq_s32(q2, q3)));
+    }
+#else
     for (int k = 2 * first; k < 2 * (first + n); k++)
         coh_chip_neon(iq, pos + COH_DATA_OFFSET + 6 * k, cv, &r32[k], &i32[k]);
+#endif
 }
 
 // int32 chips k = 2*first .. -> int16 a/b (shift, clamp), 8 bits at a time
@@ -791,18 +818,20 @@ void STARCH_IMPL(coherent_decode, neon) (const int16_t * restrict iq, int pos, u
     }
     const int16_t r8r = (int16_t) (coh_mulq15(Pr[7], rbr) - coh_mulq15(Pi[7], rbi));
     const int16_t r8i = (int16_t) (coh_mulq15(Pr[7], rbi) + coh_mulq15(Pi[7], rbr));
-    for (int i = 8; i < COH_BITS; i += 8) {
-        int16x8_t rr, ri;
-        coh_rot_neon(vld1q_s16(Pr + i - 8), vld1q_s16(Pi + i - 8), vdupq_n_s16(r8r), vdupq_n_s16(r8i), &rr, &ri);
-        vst1q_s16(Pr + i, rr);
-        vst1q_s16(Pi + i, ri);
+    // P and Q for bits [from, to), 8 at a time (the second half only after the gate)
+#define COH_PHASORS(from, to)                                                                                   \
+    for (int i = (from); i < (to); i += 8) {                                                                    \
+        int16x8_t rr, ri;                                                                                       \
+        if (i >= 8) {                                                                                           \
+            coh_rot_neon(vld1q_s16(Pr + i - 8), vld1q_s16(Pi + i - 8), vdupq_n_s16(r8r), vdupq_n_s16(r8i), &rr, &ri); \
+            vst1q_s16(Pr + i, rr);                                                                              \
+            vst1q_s16(Pi + i, ri);                                                                              \
+        }                                                                                                       \
+        coh_rot_neon(vld1q_s16(Pr + i), vld1q_s16(Pi + i), vdupq_n_s16(rcr), vdupq_n_s16(rci), &rr, &ri);       \
+        vst1q_s16(Qr + i, rr);                                                                                  \
+        vst1q_s16(Qi + i, ri);                                                                                  \
     }
-    for (int i = 0; i < COH_BITS; i += 8) {
-        int16x8_t rr, ri;
-        coh_rot_neon(vld1q_s16(Pr + i), vld1q_s16(Pi + i), vdupq_n_s16(rcr), vdupq_n_s16(rci), &rr, &ri);
-        vst1q_s16(Qr + i, rr);
-        vst1q_s16(Qi + i, ri);
-    }
+    COH_PHASORS(0, COH_EST_BITS)
 
     // Correlation over the first 56 bits
     int32x4_t hre = vdupq_n_s32(0), him = vdupq_n_s32(0);
@@ -831,6 +860,8 @@ void STARCH_IMPL(coherent_decode, neon) (const int16_t * restrict iq, int pos, u
     // Stage 2 chips, then slice all 112 bits, one byte per vector
     coh_chips32_neon(iq, pos, COH_EST_BITS, COH_BITS - COH_EST_BITS, cv, r32, i32);
     coh_chips16_neon(r32, i32, COH_EST_BITS, COH_BITS - COH_EST_BITS, cs, ar, ai, br, bi);
+    COH_PHASORS(COH_EST_BITS, COH_BITS)
+#undef COH_PHASORS
     int16_t gre, gim;
     coh_channel16(h_re, h_im, &gre, &gim);
     const int16x8_t gr = vdupq_n_s16(gre), gi = vdupq_n_s16(gim);

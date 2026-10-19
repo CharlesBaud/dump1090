@@ -19,5 +19,5 @@ Example, 2000 weak frames with a random +-100 kHz carrier offset:
 ```
 
 Coherent second pass (branch `demod-2400x-coherent`): `coh_samples.py`,
-`coh_acq.py`, `coh_snr.py`, `coh_judge.py` and `coh_tables.py`, described in
+`coh_acq.py`, `coh_max.py`, `coh_snr.py`, `coh_judge.py` and `coh_tables.py`, described in
 [COHERENT-demod2400x.md](../COHERENT-demod2400x.md).

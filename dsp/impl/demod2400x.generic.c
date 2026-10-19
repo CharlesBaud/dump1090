@@ -306,14 +306,20 @@ void STARCH_IMPL(coherent_decode, generic) (const int16_t * restrict iq, int pos
         b[i] = (coh_c16) { coh_chip16(r32[2 * i + 1], cs), coh_chip16(i32[2 * i + 1], cs) };
     }
 
-    // Block sums of the pair sums, normalised
+    // Carrier sample of each bit: the chip with the larger magnitude, which holds the
+    // pulse unless noise wins (a decision, but 3 dB less noise than a + b when right)
+    uint8_t pick_a[COH_EST_BITS];
+    for (int i = 0; i < COH_EST_BITS; i++)
+        pick_a[i] = a[i].re * a[i].re + a[i].im * a[i].im >= b[i].re * b[i].re + b[i].im * b[i].im;
+
+    // Block sums of the carrier samples, normalised
     int32_t bre[COH_NBLOCKS], bim[COH_NBLOCKS];
     uint32_t bmax = 0;
     for (int m = 0; m < COH_NBLOCKS; m++) {
         int32_t re = 0, im = 0;
         for (int i = m * COH_BLOCK; i < (m + 1) * COH_BLOCK; i++) {
-            re += a[i].re + b[i].re;
-            im += a[i].im + b[i].im;
+            re += pick_a[i] ? a[i].re : b[i].re;
+            im += pick_a[i] ? a[i].im : b[i].im;
         }
         bre[m] = re; bim[m] = im;
         if (coh_abs(re) > bmax) bmax = coh_abs(re);
@@ -350,15 +356,15 @@ void STARCH_IMPL(coherent_decode, generic) (const int16_t * restrict iq, int pos
     for (int i = 0; i < COH_EST_BITS; i++)
         Q[i] = coh_rot(rc, P[i]);
 
-    // Correlation over the first 56 bits: with the rotation removed, the pair sums of a
-    // coherent frame all point the same way, so h (their sum) is the channel: its
+    // Correlation over the first 56 bits: with the rotation removed, the carrier samples
+    // of a coherent frame all point the same way, so h (their sum) is the channel: its
     // phase is the carrier phase. rho2 compares |h|^2 with what a perfectly coherent
     // frame of the same energy would give
     int32_t hre = 0, him = 0;
     uint32_t e2 = 0;
     for (int i = 0; i < COH_EST_BITS; i++) {
-        const coh_c16 ra = coh_rot(a[i], P[i]), rbb = coh_rot(b[i], Q[i]);
-        const int16_t cre = (int16_t) (ra.re + rbb.re), cim = (int16_t) (ra.im + rbb.im);
+        const coh_c16 c = pick_a[i] ? coh_rot(a[i], P[i]) : coh_rot(b[i], Q[i]);
+        const int16_t cre = c.re, cim = c.im;
         hre += cre; him += cim;
         e2 += (uint32_t) ((cre >> 4) * (cre >> 4)) + (uint32_t) ((cim >> 4) * (cim >> 4));
     }

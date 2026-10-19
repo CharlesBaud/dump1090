@@ -672,13 +672,22 @@ void STARCH_IMPL(coherent_decode, avx2) (const int16_t * restrict iq, int pos, u
         _mm_storeu_si128((__m128i *) (bi + i), coh_to16_avx2(b32i + i, cs));
     }
 
-    // Block sums of the pair sums, normalised
+    // Carrier sample of each bit: the chip with the larger magnitude (|a|^2 >= |b|^2,
+    // by madd of interleaved (re, im)), as a 16-bit lane mask per bit that is set when
+    // b is taken; then block sums of the samples, normalised
+    __m128i pick_b[COH_NBLOCKS];
     int32_t bre[COH_NBLOCKS], bim[COH_NBLOCKS];
     uint32_t bmax = 0;
     for (int m = 0; m < COH_NBLOCKS; m++) {
         const int i = m * COH_BLOCK;
-        bre[m] = coh_hsum_epi16_128(_mm_add_epi16(_mm_loadu_si128((const __m128i *) (ar + i)), _mm_loadu_si128((const __m128i *) (br + i))));
-        bim[m] = coh_hsum_epi16_128(_mm_add_epi16(_mm_loadu_si128((const __m128i *) (ai + i)), _mm_loadu_si128((const __m128i *) (bi + i))));
+        const __m128i xar = _mm_loadu_si128((const __m128i *) (ar + i)), xai = _mm_loadu_si128((const __m128i *) (ai + i));
+        const __m128i xbr = _mm_loadu_si128((const __m128i *) (br + i)), xbi = _mm_loadu_si128((const __m128i *) (bi + i));
+        const __m128i al = _mm_unpacklo_epi16(xar, xai), ah = _mm_unpackhi_epi16(xar, xai);
+        const __m128i bl = _mm_unpacklo_epi16(xbr, xbi), bh = _mm_unpackhi_epi16(xbr, xbi);
+        pick_b[m] = _mm_packs_epi32(_mm_cmpgt_epi32(_mm_madd_epi16(bl, bl), _mm_madd_epi16(al, al)),
+                                    _mm_cmpgt_epi32(_mm_madd_epi16(bh, bh), _mm_madd_epi16(ah, ah)));
+        bre[m] = coh_hsum_epi16_128(_mm_blendv_epi8(xar, xbr, pick_b[m]));
+        bim[m] = coh_hsum_epi16_128(_mm_blendv_epi8(xai, xbi, pick_b[m]));
         if (coh_abs(bre[m]) > bmax) bmax = coh_abs(bre[m]);
         if (coh_abs(bim[m]) > bmax) bmax = coh_abs(bim[m]);
     }
@@ -733,10 +742,12 @@ void STARCH_IMPL(coherent_decode, avx2) (const int16_t * restrict iq, int pos, u
     const __m128i ones = _mm_set1_epi16(1);
     __m128i hre = _mm_setzero_si128(), him = _mm_setzero_si128(), e2v = _mm_setzero_si128();
     for (int i = 0; i < COH_EST_BITS; i += 8) {
-        __m128i xar, xai, xbr, xbi;
-        coh_rot_sse(COH_LD(ar + i), COH_LD(ai + i), COH_LD(Pr + i), COH_LD(Pi + i), &xar, &xai);
-        coh_rot_sse(COH_LD(br + i), COH_LD(bi + i), COH_LD(Qr + i), COH_LD(Qi + i), &xbr, &xbi);
-        const __m128i cre = _mm_add_epi16(xar, xbr), cim = _mm_add_epi16(xai, xbi);
+        // rot(a, P) or rot(b, Q): select the chip and its phasor, then rotate once
+        const __m128i k = pick_b[i / 8];
+        __m128i cre, cim;
+        coh_rot_sse(_mm_blendv_epi8(COH_LD(ar + i), COH_LD(br + i), k), _mm_blendv_epi8(COH_LD(ai + i), COH_LD(bi + i), k),
+                    _mm_blendv_epi8(COH_LD(Pr + i), COH_LD(Qr + i), k), _mm_blendv_epi8(COH_LD(Pi + i), COH_LD(Qi + i), k),
+                    &cre, &cim);
         hre = _mm_add_epi32(hre, _mm_madd_epi16(cre, ones));
         him = _mm_add_epi32(him, _mm_madd_epi16(cim, ones));
         const __m128i sr = _mm_srai_epi16(cre, 4), si = _mm_srai_epi16(cim, 4);

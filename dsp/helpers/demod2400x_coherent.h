@@ -9,15 +9,17 @@
 //    same polyphase table as upsample12, 16x16 -> 32-bit sums. Stage 1 does the
 //    first 56 bits; the chips are shifted so the largest is below 2^COH_CHIP_BITS
 //    and clamped to that, as int16.
-// 2. Pair sums x_a + x_b (one pulse per bit: a carrier sample whatever the data),
-//    7 block sums of 8 (one per byte), normalised below 2^COH_BLOCK_BITS.
+// 2. Carrier sample of each bit: x_a if |x_a|^2 >= |x_b|^2 (int32), else x_b (one pulse
+//    per bit, in the larger chip unless noise wins). 7 block sums of 8 (one per byte),
+//    normalised below 2^COH_BLOCK_BITS.
 // 3. Coarse search: for each of 33 bins, sum over blocks (in block order) of
 //    rot(block, coh_bin[block][bin]) in int16; power re^2 + im^2 (int32); the first
 //    largest bin wins; parabola to 1/8 of a bin (coh_fine_index).
 // 4. Phasors P[i] = e^{-j 2 w i} per bit: P[0] = 32767, P[i] = rot(P[i-1], rb) for
 //    i < 8, then P[i] = rot(P[i-8], rb8) with rb8 = rot(P[7], rb). Q[i] = rot(rc, P[i])
 //    for the second chip of each bit (rc = e^{-j w}).
-// 5. Correlation over the first 56 bits: c_i = rot(x_a, P[i]) + rot(x_b, Q[i]) (int16),
+// 5. Correlation over the first 56 bits: c_i = rot(x_a, P[i]) or rot(x_b, Q[i]), the chip
+//    chosen in step 2 (int16),
 //    h = sum c_i (int32), e2 = sum (c.re>>4)^2 + (c.im>>4)^2 (uint32);
 //    rho2 = coh_rho2(h, e2) in 1/1024. Below 'thres' the frame stops here.
 // 6. Stage 2: chips of bits 56..111 with the same shift and clamp. Slice all 112 bits:

@@ -791,13 +791,21 @@ void STARCH_IMPL(coherent_decode, neon) (const int16_t * restrict iq, int pos, u
     const int cs = coh_shift(cmax, COH_CHIP_BITS);
     coh_chips16_neon(c32, 0, COH_EST_BITS, cs, ar, ai, br, bi);
 
-    // Block sums of the pair sums (pair sums < 2^14 fit int16), normalised
+    // Carrier sample of each bit: the chip with the larger magnitude (|a|^2 >= |b|^2,
+    // int32), as a 16-bit lane mask per bit; then block sums of the samples, normalised
+    uint16x8_t pick_a[COH_NBLOCKS];
     int32_t bre[COH_NBLOCKS], bim[COH_NBLOCKS];
     uint32_t bmax = 0;
     for (int m = 0; m < COH_NBLOCKS; m++) {
         const int i = m * COH_BLOCK;
-        bre[m] = coh_hsum_s16_neon(vaddq_s16(vld1q_s16(ar + i), vld1q_s16(br + i)));
-        bim[m] = coh_hsum_s16_neon(vaddq_s16(vld1q_s16(ai + i), vld1q_s16(bi + i)));
+        const int16x8_t xar = vld1q_s16(ar + i), xai = vld1q_s16(ai + i), xbr = vld1q_s16(br + i), xbi = vld1q_s16(bi + i);
+        const int32x4_t pal = vmlal_s16(vmull_s16(vget_low_s16(xar), vget_low_s16(xar)), vget_low_s16(xai), vget_low_s16(xai));
+        const int32x4_t pah = vmlal_s16(vmull_s16(vget_high_s16(xar), vget_high_s16(xar)), vget_high_s16(xai), vget_high_s16(xai));
+        const int32x4_t pbl = vmlal_s16(vmull_s16(vget_low_s16(xbr), vget_low_s16(xbr)), vget_low_s16(xbi), vget_low_s16(xbi));
+        const int32x4_t pbh = vmlal_s16(vmull_s16(vget_high_s16(xbr), vget_high_s16(xbr)), vget_high_s16(xbi), vget_high_s16(xbi));
+        pick_a[m] = vcombine_u16(vmovn_u32(vcgeq_s32(pal, pbl)), vmovn_u32(vcgeq_s32(pah, pbh)));
+        bre[m] = coh_hsum_s16_neon(vbslq_s16(pick_a[m], xar, xbr));
+        bim[m] = coh_hsum_s16_neon(vbslq_s16(pick_a[m], xai, xbi));
         if (coh_abs(bre[m]) > bmax) bmax = coh_abs(bre[m]);
         if (coh_abs(bim[m]) > bmax) bmax = coh_abs(bim[m]);
     }
@@ -848,10 +856,12 @@ void STARCH_IMPL(coherent_decode, neon) (const int16_t * restrict iq, int pos, u
     int32x4_t hre = vdupq_n_s32(0), him = vdupq_n_s32(0);
     uint32x4_t e2v = vdupq_n_u32(0);
     for (int i = 0; i < COH_EST_BITS; i += 8) {
-        int16x8_t xar, xai, xbr, xbi;
-        coh_rot_neon(vld1q_s16(ar + i), vld1q_s16(ai + i), vld1q_s16(Pr + i), vld1q_s16(Pi + i), &xar, &xai);
-        coh_rot_neon(vld1q_s16(br + i), vld1q_s16(bi + i), vld1q_s16(Qr + i), vld1q_s16(Qi + i), &xbr, &xbi);
-        const int16x8_t cre = vaddq_s16(xar, xbr), cim = vaddq_s16(xai, xbi);
+        // rot(a, P) or rot(b, Q): select the chip and its phasor, then rotate once
+        const uint16x8_t k = pick_a[i / 8];
+        int16x8_t cre, cim;
+        coh_rot_neon(vbslq_s16(k, vld1q_s16(ar + i), vld1q_s16(br + i)), vbslq_s16(k, vld1q_s16(ai + i), vld1q_s16(bi + i)),
+                     vbslq_s16(k, vld1q_s16(Pr + i), vld1q_s16(Qr + i)), vbslq_s16(k, vld1q_s16(Pi + i), vld1q_s16(Qi + i)),
+                     &cre, &cim);
         hre = vpadalq_s16(hre, cre);
         him = vpadalq_s16(him, cim);
         const int16x8_t sr = vshrq_n_s16(cre, 4), si = vshrq_n_s16(cim, 4);

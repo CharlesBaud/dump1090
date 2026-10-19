@@ -632,7 +632,10 @@ void STARCH_IMPL(decode_bits, neon) (const uint16_t * restrict p, unsigned nbyte
 }
 
 
-// Coherent decode (see demod2400x_coherent.h for the exact definition), 8 lanes at a time
+// Coherent decode (see demod2400x_coherent.h for the exact definition), 8 lanes at a time.
+// vqrdmulh(a, b) = sat((2ab + 2^15) >> 16) = (ab + 2^14) >> 15 = coh_mulq15(a, b); it only
+// saturates for -32768 * -32768, which can't occur (chips < 2^13, phasors within +-32767).
+// Integer sums are exact, so adding lanes in a different order gives the same result.
 
 static inline __attribute__((always_inline)) int32_t coh_hsum_s32_neon(int32x4_t v)
 {
@@ -659,6 +662,7 @@ static inline __attribute__((always_inline)) int32_t coh_hsum_s16_neon(int16x8_t
     return coh_hsum_s32_neon(vpaddlq_s16(v));
 }
 
+// 8 compare results (all ones / zero) -> one byte, lane 0 in the top bit
 static inline __attribute__((always_inline)) uint8_t coh_bits8_neon(uint16x8_t mask)
 {
     static const uint16_t weights[8] = { 128, 64, 32, 16, 8, 4, 2, 1 };
@@ -680,7 +684,8 @@ void coh_rot_neon(int16x8_t xr, int16x8_t xi, int16x8_t pr, int16x8_t pi, int16x
     *ri = vaddq_s16(vqrdmulhq_s16(xr, pi), vqrdmulhq_s16(xi, pr));
 }
 
-// One chip: 8 taps of interleaved I/Q at 12 MHz position t
+// One chip: 8 taps of interleaved I/Q at 12 MHz position t (vld2 splits I and Q;
+// the 5 tap sets alternate with the chip because 6k mod 5 = k mod 5)
 static inline __attribute__((always_inline))
 void coh_chip_neon(const int16_t *iq, int t, const int16x8_t *cv, int32_t *re, int32_t *im)
 {
@@ -837,6 +842,7 @@ void STARCH_IMPL(coherent_decode, neon) (const int16_t * restrict iq, int pos, u
         const int16x8_t ya = vaddq_s16(vqrdmulhq_s16(xar, gr), vqrdmulhq_s16(xai, gi));
         const int16x8_t yb = vaddq_s16(vqrdmulhq_s16(xbr, gr), vqrdmulhq_s16(xbi, gi));
         out[i >> 3] = coh_bits8_neon(vcgtq_s16(ya, yb));
+        // |ya - yb| and |ya| + |yb| are below 2^15, so as uint16 they widen-accumulate safely
         const int half = i >= COH_EST_BITS;
         qual[half] = vpadalq_u16(qual[half], vreinterpretq_u16_s16(vabdq_s16(ya, yb)));
         pw[half] = vpadalq_u16(pw[half], vreinterpretq_u16_s16(vaddq_s16(vabsq_s16(ya), vabsq_s16(yb))));

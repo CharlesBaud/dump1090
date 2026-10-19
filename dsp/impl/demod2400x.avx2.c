@@ -574,7 +574,9 @@ void STARCH_IMPL(decode_bits, avx2) (const uint16_t * restrict p, unsigned nbyte
 
 
 // Coherent decode (see demod2400x_coherent.h for the exact definition), 8 lanes at a time
-// with 128-bit mulhrs: (a*b + 2^14) >> 15, as coh_mulq15()
+// with 128-bit mulhrs: ((a*b >> 14) + 1) >> 1 = (a*b + 2^14) >> 15, as coh_mulq15().
+// 8 lanes match the 8-bit blocks and bytes of the frame; integer sums are exact, so
+// the lane order doesn't change any result.
 
 static inline __attribute__((always_inline)) int32_t coh_hsum_epi32_128(__m128i v)
 {
@@ -597,6 +599,7 @@ void coh_rot_sse(__m128i xr, __m128i xi, __m128i pr, __m128i pi, __m128i *rr, __
 }
 
 // One chip: 8 interleaved I/Q pairs at 12 MHz position t, madd with [c,0,..] and [0,c,..]
+// gives the I and Q tap products in pairs, then two horizontal adds finish both sums
 static inline __attribute__((always_inline))
 void coh_chip_avx2(const int16_t *iq, int t, const __m256i *ci, const __m256i *cq, int32_t *re, int32_t *im)
 {
@@ -681,7 +684,7 @@ void STARCH_IMPL(coherent_decode, avx2) (const int16_t * restrict iq, int pos, u
     }
     const int bs = coh_shift(bmax, COH_BLOCK_BITS);
 
-    // Coarse search, 8 bins per vector
+    // Coarse search, 8 bins per vector; re^2 + im^2 by madd of interleaved (re, im)
     int32_t p[COH_BINS_PAD];
     for (int j = 0; j < COH_BINS_PAD; j += 8) {
         __m128i sre = _mm_setzero_si128(), sim = _mm_setzero_si128();

@@ -257,9 +257,12 @@ void STARCH_IMPL(decode_bits, generic) (const uint16_t * restrict p, unsigned nb
 }
 
 
-// Coherent decode (see demod2400x_coherent.h for the exact definition)
+// Coherent decode (see demod2400x_coherent.h for the exact definition).
+// This is the plain reference: the NEON and AVX2 versions must give exactly the
+// same out[] and info[], so the order of every rounded step here is the definition.
 typedef struct { int16_t re, im; } coh_c16;
 
+// x * p for a Q15 phasor p; each product rounded separately, as the SIMD versions do
 static inline coh_c16 coh_rot(coh_c16 x, coh_c16 p)
 {
     coh_c16 r = { (int16_t) (coh_mulq15(x.re, p.re) - coh_mulq15(x.im, p.im)),
@@ -288,7 +291,8 @@ void STARCH_IMPL(coherent_decode, generic) (const int16_t * restrict iq, int pos
     memset(out, 0, 14);
     memset(info, 0, COH_INFO_N * sizeof(*info));
 
-    // Stage 1 chips: the largest of the first 56 bits sets the shift
+    // Stage 1 chips: the largest of the first 56 bits sets the shift. One shift for
+    // the whole frame keeps the relative amplitudes, which the slicer compares
     int32_t r32[2 * COH_EST_BITS], i32[2 * COH_EST_BITS];
     uint32_t cmax = 0;
     for (int k = 0; k < 2 * COH_EST_BITS; k++) {
@@ -335,7 +339,8 @@ void STARCH_IMPL(coherent_decode, generic) (const int16_t * restrict iq, int pos
     const coh_c16 rc = { coh_fine_chip[f][0], coh_fine_chip[f][1] };
     const coh_c16 rb = { coh_fine_bit[f][0], coh_fine_bit[f][1] };
 
-    // Phasors per bit
+    // Phasors per bit: P[i] = e^{-j 2 w i} de-rotates bit i, Q[i] its second chip
+    // (half a bit later). Built in blocks of 8 so SIMD versions can do 8 at a time
     P[0] = (coh_c16) { 32767, 0 };
     for (int i = 1; i < 8; i++)
         P[i] = coh_rot(P[i - 1], rb);
@@ -345,7 +350,10 @@ void STARCH_IMPL(coherent_decode, generic) (const int16_t * restrict iq, int pos
     for (int i = 0; i < COH_BITS; i++)
         Q[i] = coh_rot(rc, P[i]);
 
-    // Correlation over the first 56 bits
+    // Correlation over the first 56 bits: with the rotation removed, the pair sums of a
+    // coherent frame all point the same way, so h (their sum) is the channel: its
+    // phase is the carrier phase. rho2 compares |h|^2 with what a perfectly coherent
+    // frame of the same energy would give
     int32_t hre = 0, him = 0;
     uint32_t e2 = 0;
     for (int i = 0; i < COH_EST_BITS; i++) {
@@ -360,7 +368,9 @@ void STARCH_IMPL(coherent_decode, generic) (const int16_t * restrict iq, int pos
     if (rho2 < thres)
         return;
 
-    // Stage 2 chips, then slice all 112 bits
+    // Stage 2 chips (only for frames that passed the gate), then slice all 112 bits:
+    // projecting each de-rotated chip on h keeps the signal and only the noise in phase
+    // with it; the pulse is in the chip with the larger projection
     coh_chips_generic(iq, pos, COH_EST_BITS, COH_BITS - COH_EST_BITS, cs, a, b);
     int16_t gre, gim;
     coh_channel16(hre, him, &gre, &gim);

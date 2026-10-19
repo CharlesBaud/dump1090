@@ -14,7 +14,7 @@
 
 #include "dump1090.h"
 
-#ifdef DEMOD_2400X
+#if defined(DEMOD_2400X) && defined(DEMOD_2400X_COHERENT)
 
 #include <math.h>
 
@@ -30,7 +30,7 @@ const struct coherent_config *coherentConfig(void)
     if (!init) {
         const char *s;
         init = 1;
-        cfg.enabled = (s = getenv("DEMOD_COHERENT")) ? atoi(s) : 0;
+        cfg.enabled = (s = getenv("DEMOD_COHERENT")) ? atoi(s) : 1;        // built in: on unless DEMOD_COHERENT=0
         cfg.gate = (s = getenv("COH_GATE")) ? (unsigned) atoi(s) : 96;
         cfg.rho2 = (s = getenv("COH_RHO2")) ? (float) atof(s) : 0.6f;
         cfg.diag = (s = getenv("COH_DIAG")) ? atoi(s) : 0;
@@ -48,6 +48,8 @@ int coherentChips(const int16_t *iq, unsigned iq_len, int pos, int32_t (*chips)[
     return 0;
 }
 
+// Bounds check, then the starch kernel; the gate threshold is passed in 1/1024 so the
+// kernel can skip the second half of frames that aren't coherent
 int coherentDecode(const int16_t *iq, unsigned iq_len, int pos,
                    uint8_t *out, unsigned *q1, unsigned *q2, float *rho2)
 {
@@ -66,4 +68,4 @@ int coherentDecode(const int16_t *iq, unsigned iq_len, int pos,
     return 0;
 }
 
-#endif /* DEMOD_2400X */
+#endif /* DEMOD_2400X && DEMOD_2400X_COHERENT */

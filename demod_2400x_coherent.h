@@ -28,7 +28,7 @@ int coherentChips(const int16_t *iq, unsigned iq_len, int pos, int32_t (*chips)[
 
 // Experiment settings (environment, read once)
 struct coherent_config {
-    int enabled;        // DEMOD_COHERENT: 0 off, 1 rescue frames that fail the CRC
+    int enabled;        // DEMOD_COHERENT: 1 (default) rescue frames that fail the CRC, 0 off
     unsigned gate;      // COH_GATE: minimum magnitude quality of the first 56 bits
     float rho2;         // COH_RHO2: minimum carrier coherence (default 0.6)
     int diag;           // COH_DIAG: also decode accepted frames, to count bit errors

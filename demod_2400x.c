@@ -23,6 +23,9 @@
 
 #include "dsp/helpers/demod2400x_dsp.h"
 #include "dsp/helpers/demod2400x_coeffs.h"
+#ifdef DEMOD_2400X_COHERENT
+// Coherent second pass (demod_2400x_coherent.c): frames whose magnitude bits fail
+// the CRC are decoded again coherently. Statistics are printed at exit with COH_STATS=1.
 #include "demod_2400x_coherent.h"
 
 #include <time.h>
@@ -83,6 +86,7 @@ static unsigned bitErrors(const uint8_t *a, const uint8_t *b, int bits)
         n += (unsigned) __builtin_popcount(a[i] ^ b[i]);
     return n;
 }
+#endif /* DEMOD_2400X_COHERENT */
 
 // The metric index is this many 12 MHz samples (3 input samples, the FIR delay)
 // before the true start of the preamble
@@ -128,6 +132,7 @@ struct candidate {
 };
 
 
+#ifdef DEMOD_2400X_COHERENT
 // Sample dump for offline algorithm development (COH_SAMPLES=file). One record per
 // frame, little-endian:
 //   int32 accepted (1: CRC-checked frame, 0: candidate that failed)
@@ -190,6 +195,7 @@ static void dumpFrame(const int16_t *iq, unsigned iq_len, const struct candidate
     dump.written++;
     if (accepted) dump.accepted++; else dump.rejected++;
 }
+#endif /* DEMOD_2400X_COHERENT */
 
 // Allocate holding buffers
 static int allocBuffer(int nsize, int *osize, void **bptr) {
@@ -394,18 +400,23 @@ static int emitFrame(const struct mag_buf *mag, const struct candidate *c,
 {
     static const struct modesMessage zeroMessage;
     struct modesMessage mm;
-    const struct coherent_config *coh = coherentConfig();
-    const struct candidate *mag_c = c;
-    struct candidate cc;
 
     int score = scoreModesMessage(c->msg);
 
-    // Coherent second pass for frames the magnitude bits don't decode
+#ifdef DEMOD_2400X_COHERENT
+    const struct coherent_config *coh = coherentConfig();
+    const struct candidate *mag_c = c;      // the magnitude decoder's candidate
+    struct candidate cc;                    // its coherent version, if that decodes
+
+    // Coherent second pass for frames the magnitude bits don't decode. Only worth
+    // trying for candidates whose bits already look fairly clean (quality gate);
+    // the kernel itself stops early when the carrier isn't coherent (rho2 gate).
     if (score < SR_ACCEPT_THRESHOLD && coh->enabled && c->quality >= coh->gate) {
         static int registered;
         if (!registered) {
             registered = 1;
-            atexit(cohReport);
+            if (getenv("COH_STATS"))
+                atexit(cohReport);
         }
         const double t0 = cohNow();
         unsigned q1;
@@ -435,9 +446,12 @@ static int emitFrame(const struct mag_buf *mag, const struct candidate *c,
         }
         coh_stats.seconds += cohNow() - t0;
     }
+#endif /* DEMOD_2400X_COHERENT */
 
     if (score < SR_ACCEPT_THRESHOLD) {
+#ifdef DEMOD_2400X_COHERENT
         dumpFrame(iq, mag->validLength, c, 0, score, 0, NULL, st->udata, nt);
+#endif
         if (score >= SR_UNKNOWN_THRESHOLD)
             Modes.stats_current.demod_rejected_unknown_icao++;
         else
@@ -461,6 +475,8 @@ static int emitFrame(const struct mag_buf *mag, const struct candidate *c,
         return 0;
     }
     Modes.stats_current.demod_accepted[mm.correctedbits]++;
+
+#ifdef DEMOD_2400X_COHERENT
     if (c == mag_c)
         dumpFrame(iq, mag->validLength, c, 1, score, mm.addr, mm.msg, st->udata, nt);
 
@@ -489,6 +505,7 @@ static int emitFrame(const struct mag_buf *mag, const struct candidate *c,
             if (ec > em) coh_stats.diag_coh_worse++;
         }
     }
+#endif /* DEMOD_2400X_COHERENT */
 
     // Timestamp at the end of bit 56, even for 112-bit frames (Beast / Radarcape convention)
     int tpos = fineTiming(c->pos, mm.msg, mm.msgbits, st->udata, nt);

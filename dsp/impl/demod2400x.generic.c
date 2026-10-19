@@ -11,6 +11,7 @@
 #include "dsp/helpers/demod2400x_dsp.h"
 #include "dsp/helpers/demod2400x_coeffs.h"
 #include "dsp/helpers/demod2400x_iqconv.h"
+#include "dsp/helpers/demod2400x_coherent.h"
 
 // Get power
 static inline unsigned getpow_generic(
@@ -253,4 +254,127 @@ void STARCH_IMPL(decode_bits, generic) (const uint16_t * restrict p, unsigned nb
         p += 16;
     }
     *quality = (unsigned) ((256 * (uint64_t) qual) / (pow + 1));
+}
+
+
+// Coherent decode (see demod2400x_coherent.h for the exact definition)
+typedef struct { int16_t re, im; } coh_c16;
+
+static inline coh_c16 coh_rot(coh_c16 x, coh_c16 p)
+{
+    coh_c16 r = { (int16_t) (coh_mulq15(x.re, p.re) - coh_mulq15(x.im, p.im)),
+                  (int16_t) (coh_mulq15(x.re, p.im) + coh_mulq15(x.im, p.re)) };
+    return r;
+}
+
+// Chips of bits first .. first+n-1 as int16 a (first chip) and b (second chip)
+static void coh_chips_generic(const int16_t *iq, int pos, int first, int n, int shift,
+                              coh_c16 *a, coh_c16 *b)
+{
+    for (int i = first; i < first + n; i++) {
+        int32_t re, im;
+        coh_chip(iq, pos + COH_DATA_OFFSET + 12 * i, &re, &im);
+        a[i] = (coh_c16) { coh_chip16(re, shift), coh_chip16(im, shift) };
+        coh_chip(iq, pos + COH_DATA_OFFSET + 12 * i + 6, &re, &im);
+        b[i] = (coh_c16) { coh_chip16(re, shift), coh_chip16(im, shift) };
+    }
+}
+
+void STARCH_IMPL(coherent_decode, generic) (const int16_t * restrict iq, int pos, unsigned thres,
+                                            uint8_t * restrict out, uint32_t * restrict info)
+{
+    coh_c16 a[COH_BITS], b[COH_BITS], P[COH_BITS], Q[COH_BITS];
+
+    memset(out, 0, 14);
+    memset(info, 0, COH_INFO_N * sizeof(*info));
+
+    // Stage 1 chips: the largest of the first 56 bits sets the shift
+    int32_t r32[2 * COH_EST_BITS], i32[2 * COH_EST_BITS];
+    uint32_t cmax = 0;
+    for (int k = 0; k < 2 * COH_EST_BITS; k++) {
+        coh_chip(iq, pos + COH_DATA_OFFSET + 6 * k, &r32[k], &i32[k]);
+        if (coh_abs(r32[k]) > cmax) cmax = coh_abs(r32[k]);
+        if (coh_abs(i32[k]) > cmax) cmax = coh_abs(i32[k]);
+    }
+    const int cs = coh_shift(cmax, COH_CHIP_BITS);
+    for (int i = 0; i < COH_EST_BITS; i++) {
+        a[i] = (coh_c16) { coh_chip16(r32[2 * i], cs), coh_chip16(i32[2 * i], cs) };
+        b[i] = (coh_c16) { coh_chip16(r32[2 * i + 1], cs), coh_chip16(i32[2 * i + 1], cs) };
+    }
+
+    // Block sums of the pair sums, normalised
+    int32_t bre[COH_NBLOCKS], bim[COH_NBLOCKS];
+    uint32_t bmax = 0;
+    for (int m = 0; m < COH_NBLOCKS; m++) {
+        int32_t re = 0, im = 0;
+        for (int i = m * COH_BLOCK; i < (m + 1) * COH_BLOCK; i++) {
+            re += a[i].re + b[i].re;
+            im += a[i].im + b[i].im;
+        }
+        bre[m] = re; bim[m] = im;
+        if (coh_abs(re) > bmax) bmax = coh_abs(re);
+        if (coh_abs(im) > bmax) bmax = coh_abs(im);
+    }
+    const int bs = coh_shift(bmax, COH_BLOCK_BITS);
+    coh_c16 blk[COH_NBLOCKS];
+    for (int m = 0; m < COH_NBLOCKS; m++)
+        blk[m] = (coh_c16) { (int16_t) (bre[m] >> bs), (int16_t) (bim[m] >> bs) };
+
+    // Coarse search
+    int32_t p[COH_BINS];
+    for (int j = 0; j < COH_BINS; j++) {
+        int16_t re = 0, im = 0;
+        for (int m = 0; m < COH_NBLOCKS; m++) {
+            const coh_c16 r = coh_rot(blk[m], (coh_c16) { coh_bin_re[m][j], coh_bin_im[m][j] });
+            re = (int16_t) (re + r.re);
+            im = (int16_t) (im + r.im);
+        }
+        p[j] = re * re + im * im;
+    }
+    const int f = coh_fine_index(p, coh_argmax(p, COH_BINS));
+    const coh_c16 rc = { coh_fine_chip[f][0], coh_fine_chip[f][1] };
+    const coh_c16 rb = { coh_fine_bit[f][0], coh_fine_bit[f][1] };
+
+    // Phasors per bit
+    P[0] = (coh_c16) { 32767, 0 };
+    for (int i = 1; i < 8; i++)
+        P[i] = coh_rot(P[i - 1], rb);
+    const coh_c16 rb8 = coh_rot(P[7], rb);
+    for (int i = 8; i < COH_BITS; i++)
+        P[i] = coh_rot(P[i - 8], rb8);
+    for (int i = 0; i < COH_BITS; i++)
+        Q[i] = coh_rot(rc, P[i]);
+
+    // Correlation over the first 56 bits
+    int32_t hre = 0, him = 0;
+    uint32_t e2 = 0;
+    for (int i = 0; i < COH_EST_BITS; i++) {
+        const coh_c16 ra = coh_rot(a[i], P[i]), rbb = coh_rot(b[i], Q[i]);
+        const int16_t cre = (int16_t) (ra.re + rbb.re), cim = (int16_t) (ra.im + rbb.im);
+        hre += cre; him += cim;
+        e2 += (uint32_t) ((cre >> 4) * (cre >> 4)) + (uint32_t) ((cim >> 4) * (cim >> 4));
+    }
+    const uint32_t rho2 = coh_rho2(hre, him, e2);
+    info[COH_INFO_RHO2] = rho2;
+    info[COH_INFO_FINE] = (uint32_t) f;
+    if (rho2 < thres)
+        return;
+
+    // Stage 2 chips, then slice all 112 bits
+    coh_chips_generic(iq, pos, COH_EST_BITS, COH_BITS - COH_EST_BITS, cs, a, b);
+    int16_t gre, gim;
+    coh_channel16(hre, him, &gre, &gim);
+    uint32_t qual[2] = { 0, 0 }, pw[2] = { 0, 0 };
+    for (int i = 0; i < COH_BITS; i++) {
+        const coh_c16 ra = coh_rot(a[i], P[i]), rbb = coh_rot(b[i], Q[i]);
+        const int16_t ya = (int16_t) (coh_mulq15(ra.re, gre) + coh_mulq15(ra.im, gim));
+        const int16_t yb = (int16_t) (coh_mulq15(rbb.re, gre) + coh_mulq15(rbb.im, gim));
+        if (ya > yb)
+            out[i >> 3] |= (uint8_t) (0x80 >> (i & 7));
+        qual[i >= COH_EST_BITS] += coh_abs(ya - yb);
+        pw[i >= COH_EST_BITS] += coh_abs(ya) + coh_abs(yb);
+    }
+    info[COH_INFO_DECODED] = 1;
+    info[COH_INFO_Q1] = coh_quality(qual[0], pw[0]);
+    info[COH_INFO_Q2] = coh_quality(qual[1], pw[1]);
 }

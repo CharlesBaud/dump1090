@@ -18,6 +18,7 @@
 
 #include "dsp/helpers/demod2400x_dsp.h"
 #include "dsp/helpers/demod2400x_coeffs.h"
+#include "dsp/helpers/demod2400x_coherent.h"
 
 #define DEMOD2400X_BENCH_LEN   131072   // one FIFO buffer of I/Q samples
 #define DEMOD2400X_BENCH_SHIFT 8
@@ -438,5 +439,57 @@ bool STARCH_BENCHMARK_VERIFY(decode_bits) (const uint16_t *p, unsigned nbytes, u
 
     memset(msg, DEMOD2400X_BENCH_POISON, DECODE_BITS_MAX_BYTES);
     *quality = ~0U;
+    return okay;
+}
+
+
+// Coherent decode: ordinary and full-range data with the gate open (thres 0, so the
+// bits are always sliced), and ordinary data with the usual gate (0.6 = 614/1024)
+void STARCH_BENCHMARK(coherent_decode) (void)
+{
+    const int len = DEMOD2400X_BENCH_LEN;
+    int16_t *in = demod2400x_make_iq(len);
+    int16_t *in_full = demod2400x_make_iq_full(len);
+    uint8_t out[14];
+    uint32_t info[COH_INFO_N];
+
+    if (in && in_full) {
+        memset(out, DEMOD2400X_BENCH_POISON, sizeof(out));
+        memset(info, DEMOD2400X_BENCH_POISON, sizeof(info));
+        STARCH_BENCHMARK_RUN( coherent_decode, in, 1001, 0, out, info );
+        STARCH_BENCHMARK_RUN( coherent_decode, in_full, 777, 0, out, info );
+        STARCH_BENCHMARK_RUN( coherent_decode, in, 50003, 614, out, info );
+    }
+
+    free(in);
+    free(in_full);
+}
+
+bool STARCH_BENCHMARK_VERIFY(coherent_decode) (const int16_t *iq, int pos, unsigned thres, uint8_t *out, uint32_t *info)
+{
+    uint8_t ref[14];
+    uint32_t ref_info[COH_INFO_N];
+
+    memset(ref, DEMOD2400X_BENCH_POISON, sizeof(ref));
+    memset(ref_info, DEMOD2400X_BENCH_POISON, sizeof(ref_info));
+    starch_coherent_decode_generic_generic(iq, pos, thres, ref, ref_info);
+
+    bool okay = true;
+    for (int k = 0; k < 14; ++k) {
+        if (out[k] != ref[k]) {
+            fprintf(stderr, "verification failed: out[%d]=%02x, expected %02x\n", k, out[k], ref[k]);
+            okay = false;
+            break;
+        }
+    }
+    for (int k = 0; okay && k < COH_INFO_N; ++k) {
+        if (info[k] != ref_info[k]) {
+            fprintf(stderr, "verification failed: info[%d]=%u, expected %u\n", k, info[k], ref_info[k]);
+            okay = false;
+        }
+    }
+
+    memset(out, DEMOD2400X_BENCH_POISON, 14);
+    memset(info, DEMOD2400X_BENCH_POISON, COH_INFO_N * sizeof(*info));
     return okay;
 }

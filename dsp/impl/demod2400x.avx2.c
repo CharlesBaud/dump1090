@@ -17,6 +17,7 @@
 #include "dsp/helpers/demod2400x_dsp.h"
 #include "dsp/helpers/demod2400x_coeffs.h"
 #include "dsp/helpers/demod2400x_iqconv.h"
+#include "dsp/helpers/demod2400x_coherent.h"
 
 // Two vectors of 8 x int16: val[0] = I, val[1] = Q (same layout as NEON's int16x8x2_t)
 typedef struct {
@@ -569,4 +570,207 @@ void STARCH_IMPL(decode_bits, avx2) (const uint16_t * restrict p, unsigned nbyte
     const uint32_t qsum = (uint32_t) _mm_cvtsi128_si32(qs);
     const uint32_t ssum = (uint32_t) _mm_extract_epi32(qs, 1);
     *quality = (unsigned) ((256 * (uint64_t) qsum) / (ssum + 1));
+}
+
+
+// Coherent decode (see demod2400x_coherent.h for the exact definition), 8 lanes at a time
+// with 128-bit mulhrs: (a*b + 2^14) >> 15, as coh_mulq15()
+
+static inline __attribute__((always_inline)) int32_t coh_hsum_epi32_128(__m128i v)
+{
+    v = _mm_add_epi32(v, _mm_shuffle_epi32(v, _MM_SHUFFLE(1, 0, 3, 2)));
+    v = _mm_add_epi32(v, _mm_shuffle_epi32(v, _MM_SHUFFLE(2, 3, 0, 1)));
+    return _mm_cvtsi128_si32(v);
+}
+
+// Sum of 8 int16 lanes as int32
+static inline __attribute__((always_inline)) int32_t coh_hsum_epi16_128(__m128i v)
+{
+    return coh_hsum_epi32_128(_mm_madd_epi16(v, _mm_set1_epi16(1)));
+}
+
+static inline __attribute__((always_inline))
+void coh_rot_sse(__m128i xr, __m128i xi, __m128i pr, __m128i pi, __m128i *rr, __m128i *ri)
+{
+    *rr = _mm_sub_epi16(_mm_mulhrs_epi16(xr, pr), _mm_mulhrs_epi16(xi, pi));
+    *ri = _mm_add_epi16(_mm_mulhrs_epi16(xr, pi), _mm_mulhrs_epi16(xi, pr));
+}
+
+// One chip: 8 interleaved I/Q pairs at 12 MHz position t, madd with [c,0,..] and [0,c,..]
+static inline __attribute__((always_inline))
+void coh_chip_avx2(const int16_t *iq, int t, const __m256i *ci, const __m256i *cq, int32_t *re, int32_t *im)
+{
+    const int n = t / 5, c = t % 5;
+    const __m256i x = _mm256_loadu_si256((const __m256i *) (iq + 2 * n));
+    const __m256i s = _mm256_hadd_epi32(_mm256_madd_epi16(x, ci[c]), _mm256_madd_epi16(x, cq[c]));
+    // s = [I01 I23 Q01 Q23 | I45 I67 Q45 Q67]
+    const __m128i h = _mm_add_epi32(_mm256_castsi256_si128(s), _mm256_extracti128_si256(s, 1));
+    const __m128i h2 = _mm_hadd_epi32(h, h);               // [I, Q, I, Q]
+    *re = _mm_cvtsi128_si32(h2);
+    *im = _mm_extract_epi32(h2, 1);
+}
+
+// Chips of bits first .. first+n-1 as int32 a/b, I/Q
+static void coh_chips32_avx2(const int16_t *iq, int pos, int first, int n, const __m256i *ci, const __m256i *cq,
+                             int32_t *ar, int32_t *ai, int32_t *br, int32_t *bi)
+{
+    for (int i = first; i < first + n; i++) {
+        coh_chip_avx2(iq, pos + COH_DATA_OFFSET + 12 * i, ci, cq, &ar[i], &ai[i]);
+        coh_chip_avx2(iq, pos + COH_DATA_OFFSET + 12 * i + 6, ci, cq, &br[i], &bi[i]);
+    }
+}
+
+// 8 int32 -> 8 int16: shift, clamp to the chip range, pack (in order)
+static inline __attribute__((always_inline)) __m128i coh_to16_avx2(const int32_t *v, int shift)
+{
+    const __m256i lim = _mm256_set1_epi32((1 << COH_CHIP_BITS) - 1), nlim = _mm256_set1_epi32(-((1 << COH_CHIP_BITS) - 1));
+    __m256i x = _mm256_sra_epi32(_mm256_loadu_si256((const __m256i *) v), _mm_cvtsi32_si128(shift));
+    x = _mm256_max_epi32(_mm256_min_epi32(x, lim), nlim);
+    return _mm_packs_epi32(_mm256_castsi256_si128(x), _mm256_extracti128_si256(x, 1));
+}
+
+void STARCH_IMPL(coherent_decode, avx2) (const int16_t * restrict iq, int pos, unsigned thres,
+                                         uint8_t * restrict out, uint32_t * restrict info)
+{
+    int32_t a32r[COH_BITS], a32i[COH_BITS], b32r[COH_BITS], b32i[COH_BITS];
+    int16_t ar[COH_BITS], ai[COH_BITS], br[COH_BITS], bi[COH_BITS];
+    int16_t Pr[COH_BITS], Pi[COH_BITS], Qr[COH_BITS], Qi[COH_BITS];
+    __m256i ci[5], cq[5];
+    for (int c = 0; c < 5; c++) {
+        int16_t vi[16], vq[16];
+        for (int j = 0; j < 8; j++) {
+            vi[2 * j] = upsample_coeffs[c][j]; vi[2 * j + 1] = 0;
+            vq[2 * j] = 0; vq[2 * j + 1] = upsample_coeffs[c][j];
+        }
+        ci[c] = _mm256_loadu_si256((const __m256i *) vi);
+        cq[c] = _mm256_loadu_si256((const __m256i *) vq);
+    }
+
+    memset(out, 0, 14);
+    memset(info, 0, COH_INFO_N * sizeof(*info));
+
+    // Stage 1 chips and their shift
+    coh_chips32_avx2(iq, pos, 0, COH_EST_BITS, ci, cq, a32r, a32i, b32r, b32i);
+    __m256i mx = _mm256_setzero_si256();
+    for (int i = 0; i < COH_EST_BITS; i += 8) {
+        mx = _mm256_max_epu32(mx, _mm256_abs_epi32(_mm256_loadu_si256((const __m256i *) (a32r + i))));
+        mx = _mm256_max_epu32(mx, _mm256_abs_epi32(_mm256_loadu_si256((const __m256i *) (a32i + i))));
+        mx = _mm256_max_epu32(mx, _mm256_abs_epi32(_mm256_loadu_si256((const __m256i *) (b32r + i))));
+        mx = _mm256_max_epu32(mx, _mm256_abs_epi32(_mm256_loadu_si256((const __m256i *) (b32i + i))));
+    }
+    __m128i m4 = _mm_max_epu32(_mm256_castsi256_si128(mx), _mm256_extracti128_si256(mx, 1));
+    m4 = _mm_max_epu32(m4, _mm_shuffle_epi32(m4, _MM_SHUFFLE(1, 0, 3, 2)));
+    m4 = _mm_max_epu32(m4, _mm_shuffle_epi32(m4, _MM_SHUFFLE(2, 3, 0, 1)));
+    const int cs = coh_shift((uint32_t) _mm_cvtsi128_si32(m4), COH_CHIP_BITS);
+    for (int i = 0; i < COH_EST_BITS; i += 8) {
+        _mm_storeu_si128((__m128i *) (ar + i), coh_to16_avx2(a32r + i, cs));
+        _mm_storeu_si128((__m128i *) (ai + i), coh_to16_avx2(a32i + i, cs));
+        _mm_storeu_si128((__m128i *) (br + i), coh_to16_avx2(b32r + i, cs));
+        _mm_storeu_si128((__m128i *) (bi + i), coh_to16_avx2(b32i + i, cs));
+    }
+
+    // Block sums of the pair sums, normalised
+    int32_t bre[COH_NBLOCKS], bim[COH_NBLOCKS];
+    uint32_t bmax = 0;
+    for (int m = 0; m < COH_NBLOCKS; m++) {
+        const int i = m * COH_BLOCK;
+        bre[m] = coh_hsum_epi16_128(_mm_add_epi16(_mm_loadu_si128((const __m128i *) (ar + i)), _mm_loadu_si128((const __m128i *) (br + i))));
+        bim[m] = coh_hsum_epi16_128(_mm_add_epi16(_mm_loadu_si128((const __m128i *) (ai + i)), _mm_loadu_si128((const __m128i *) (bi + i))));
+        if (coh_abs(bre[m]) > bmax) bmax = coh_abs(bre[m]);
+        if (coh_abs(bim[m]) > bmax) bmax = coh_abs(bim[m]);
+    }
+    const int bs = coh_shift(bmax, COH_BLOCK_BITS);
+
+    // Coarse search, 8 bins per vector
+    int32_t p[COH_BINS_PAD];
+    for (int j = 0; j < COH_BINS_PAD; j += 8) {
+        __m128i sre = _mm_setzero_si128(), sim = _mm_setzero_si128();
+        for (int m = 0; m < COH_NBLOCKS; m++) {
+            __m128i rr, ri;
+            coh_rot_sse(_mm_set1_epi16((int16_t) (bre[m] >> bs)), _mm_set1_epi16((int16_t) (bim[m] >> bs)),
+                        _mm_loadu_si128((const __m128i *) &coh_bin_re[m][j]), _mm_loadu_si128((const __m128i *) &coh_bin_im[m][j]), &rr, &ri);
+            sre = _mm_add_epi16(sre, rr);
+            sim = _mm_add_epi16(sim, ri);
+        }
+        const __m128i lo = _mm_unpacklo_epi16(sre, sim), hi = _mm_unpackhi_epi16(sre, sim);
+        _mm_storeu_si128((__m128i *) (p + j), _mm_madd_epi16(lo, lo));
+        _mm_storeu_si128((__m128i *) (p + j + 4), _mm_madd_epi16(hi, hi));
+    }
+    const int f = coh_fine_index(p, coh_argmax(p, COH_BINS));
+    const int16_t rcr = coh_fine_chip[f][0], rci = coh_fine_chip[f][1];
+    const int16_t rbr = coh_fine_bit[f][0], rbi = coh_fine_bit[f][1];
+
+    // Phasors: first 8 one by one (as generic), then 8 at a time
+    Pr[0] = 32767; Pi[0] = 0;
+    for (int i = 1; i < 8; i++) {
+        Pr[i] = (int16_t) (coh_mulq15(Pr[i - 1], rbr) - coh_mulq15(Pi[i - 1], rbi));
+        Pi[i] = (int16_t) (coh_mulq15(Pr[i - 1], rbi) + coh_mulq15(Pi[i - 1], rbr));
+    }
+    const int16_t r8r = (int16_t) (coh_mulq15(Pr[7], rbr) - coh_mulq15(Pi[7], rbi));
+    const int16_t r8i = (int16_t) (coh_mulq15(Pr[7], rbi) + coh_mulq15(Pi[7], rbr));
+    for (int i = 8; i < COH_BITS; i += 8) {
+        __m128i rr, ri;
+        coh_rot_sse(_mm_loadu_si128((const __m128i *) (Pr + i - 8)), _mm_loadu_si128((const __m128i *) (Pi + i - 8)),
+                    _mm_set1_epi16(r8r), _mm_set1_epi16(r8i), &rr, &ri);
+        _mm_storeu_si128((__m128i *) (Pr + i), rr);
+        _mm_storeu_si128((__m128i *) (Pi + i), ri);
+    }
+    for (int i = 0; i < COH_BITS; i += 8) {
+        __m128i rr, ri;
+        coh_rot_sse(_mm_loadu_si128((const __m128i *) (Pr + i)), _mm_loadu_si128((const __m128i *) (Pi + i)),
+                    _mm_set1_epi16(rcr), _mm_set1_epi16(rci), &rr, &ri);
+        _mm_storeu_si128((__m128i *) (Qr + i), rr);
+        _mm_storeu_si128((__m128i *) (Qi + i), ri);
+    }
+
+#define COH_LD(p) _mm_loadu_si128((const __m128i *) (p))
+    // Correlation over the first 56 bits
+    const __m128i ones = _mm_set1_epi16(1);
+    __m128i hre = _mm_setzero_si128(), him = _mm_setzero_si128(), e2v = _mm_setzero_si128();
+    for (int i = 0; i < COH_EST_BITS; i += 8) {
+        __m128i xar, xai, xbr, xbi;
+        coh_rot_sse(COH_LD(ar + i), COH_LD(ai + i), COH_LD(Pr + i), COH_LD(Pi + i), &xar, &xai);
+        coh_rot_sse(COH_LD(br + i), COH_LD(bi + i), COH_LD(Qr + i), COH_LD(Qi + i), &xbr, &xbi);
+        const __m128i cre = _mm_add_epi16(xar, xbr), cim = _mm_add_epi16(xai, xbi);
+        hre = _mm_add_epi32(hre, _mm_madd_epi16(cre, ones));
+        him = _mm_add_epi32(him, _mm_madd_epi16(cim, ones));
+        const __m128i sr = _mm_srai_epi16(cre, 4), si = _mm_srai_epi16(cim, 4);
+        e2v = _mm_add_epi32(e2v, _mm_add_epi32(_mm_madd_epi16(sr, sr), _mm_madd_epi16(si, si)));
+    }
+    const int32_t h_re = coh_hsum_epi32_128(hre), h_im = coh_hsum_epi32_128(him);
+    const uint32_t rho2 = coh_rho2(h_re, h_im, (uint32_t) coh_hsum_epi32_128(e2v));
+    info[COH_INFO_RHO2] = rho2;
+    info[COH_INFO_FINE] = (uint32_t) f;
+    if (rho2 < thres)
+        return;
+
+    // Stage 2 chips, then slice all 112 bits, one byte per vector
+    coh_chips32_avx2(iq, pos, COH_EST_BITS, COH_BITS - COH_EST_BITS, ci, cq, a32r, a32i, b32r, b32i);
+    for (int i = COH_EST_BITS; i < COH_BITS; i += 8) {
+        _mm_storeu_si128((__m128i *) (ar + i), coh_to16_avx2(a32r + i, cs));
+        _mm_storeu_si128((__m128i *) (ai + i), coh_to16_avx2(a32i + i, cs));
+        _mm_storeu_si128((__m128i *) (br + i), coh_to16_avx2(b32r + i, cs));
+        _mm_storeu_si128((__m128i *) (bi + i), coh_to16_avx2(b32i + i, cs));
+    }
+    int16_t gre, gim;
+    coh_channel16(h_re, h_im, &gre, &gim);
+    const __m128i gr = _mm_set1_epi16(gre), gi = _mm_set1_epi16(gim);
+    const __m128i reverse = _mm_setr_epi8(14, 15, 12, 13, 10, 11, 8, 9, 6, 7, 4, 5, 2, 3, 0, 1);
+    __m128i qual[2] = { _mm_setzero_si128(), _mm_setzero_si128() }, pw[2] = { _mm_setzero_si128(), _mm_setzero_si128() };
+    for (int i = 0; i < COH_BITS; i += 8) {
+        __m128i xar, xai, xbr, xbi;
+        coh_rot_sse(COH_LD(ar + i), COH_LD(ai + i), COH_LD(Pr + i), COH_LD(Pi + i), &xar, &xai);
+        coh_rot_sse(COH_LD(br + i), COH_LD(bi + i), COH_LD(Qr + i), COH_LD(Qi + i), &xbr, &xbi);
+        const __m128i ya = _mm_add_epi16(_mm_mulhrs_epi16(xar, gr), _mm_mulhrs_epi16(xai, gi));
+        const __m128i yb = _mm_add_epi16(_mm_mulhrs_epi16(xbr, gr), _mm_mulhrs_epi16(xbi, gi));
+        const __m128i gt = _mm_shuffle_epi8(_mm_cmpgt_epi16(ya, yb), reverse);   // lane 0 -> bit 7
+        out[i >> 3] = (uint8_t) _mm_movemask_epi8(_mm_packs_epi16(gt, _mm_setzero_si128()));
+        const int half = i >= COH_EST_BITS;
+        qual[half] = _mm_add_epi32(qual[half], _mm_madd_epi16(_mm_abs_epi16(_mm_sub_epi16(ya, yb)), ones));
+        pw[half] = _mm_add_epi32(pw[half], _mm_madd_epi16(_mm_add_epi16(_mm_abs_epi16(ya), _mm_abs_epi16(yb)), ones));
+    }
+#undef COH_LD
+    info[COH_INFO_DECODED] = 1;
+    info[COH_INFO_Q1] = coh_quality((uint32_t) coh_hsum_epi32_128(qual[0]), (uint32_t) coh_hsum_epi32_128(pw[0]));
+    info[COH_INFO_Q2] = coh_quality((uint32_t) coh_hsum_epi32_128(qual[1]), (uint32_t) coh_hsum_epi32_128(pw[1]));
 }

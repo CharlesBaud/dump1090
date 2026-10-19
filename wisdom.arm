@@ -51,3 +51,8 @@ iqdata_conv_sc16q11                      generic_generic                        
 decode_bits                              neon_armv7a_neon_vfpv4                    # 65 ns/call
 decode_bits                              generic_generic                           # 102 ns/call
 decode_bits                              generic_armv7a_neon_vfpv4                 # 110 ns/call
+
+# DEMOD_2400X coherent decode: provisional order (hand-written NEON first)
+coherent_decode                          neon_armv7a_neon_vfpv4
+coherent_decode                          generic_armv7a_neon_vfpv4
+coherent_decode                          generic_generic

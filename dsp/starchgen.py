@@ -51,6 +51,9 @@ gen.add_function(
    argtypes = ['const uint16_t *', 'int', 'unsigned', 'uint8_t *'],
    returntype = 'int')       
 gen.add_function(
+   name = 'coherent_decode',
+   argtypes = ['const int16_t *', 'int', 'unsigned', 'uint8_t *', 'uint32_t *'])
+gen.add_function(
    name = 'decode_bits',
    argtypes = ['const uint16_t *', 'unsigned', 'uint8_t *', 'unsigned *'])
 

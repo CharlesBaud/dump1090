@@ -17,6 +17,7 @@
 #include "dsp/helpers/demod2400x_dsp.h"
 #include "dsp/helpers/demod2400x_coeffs.h"
 #include "dsp/helpers/demod2400x_iqconv.h"
+#include "dsp/helpers/demod2400x_coherent.h"
 
 // Horizontal add of two vectors at once: returns [sum of a, sum of b]
 static inline __attribute__((always_inline))
@@ -628,4 +629,219 @@ void STARCH_IMPL(decode_bits, neon) (const uint16_t * restrict p, unsigned nbyte
     const uint32_t q = vget_lane_u32(qs, 0), s = vget_lane_u32(qs, 1);
 #endif
     *quality = (unsigned) ((256 * (uint64_t) q) / (s + 1));
+}
+
+
+// Coherent decode (see demod2400x_coherent.h for the exact definition), 8 lanes at a time
+
+static inline __attribute__((always_inline)) int32_t coh_hsum_s32_neon(int32x4_t v)
+{
+#ifdef __aarch64__
+    return vaddvq_s32(v);
+#else
+    int32x2_t s = vadd_s32(vget_low_s32(v), vget_high_s32(v));
+    return vget_lane_s32(vpadd_s32(s, s), 0);
+#endif
+}
+
+static inline __attribute__((always_inline)) uint32_t coh_hsum_u32_neon(uint32x4_t v)
+{
+#ifdef __aarch64__
+    return vaddvq_u32(v);
+#else
+    uint32x2_t s = vadd_u32(vget_low_u32(v), vget_high_u32(v));
+    return vget_lane_u32(vpadd_u32(s, s), 0);
+#endif
+}
+
+static inline __attribute__((always_inline)) int32_t coh_hsum_s16_neon(int16x8_t v)
+{
+    return coh_hsum_s32_neon(vpaddlq_s16(v));
+}
+
+static inline __attribute__((always_inline)) uint8_t coh_bits8_neon(uint16x8_t mask)
+{
+    static const uint16_t weights[8] = { 128, 64, 32, 16, 8, 4, 2, 1 };
+    const uint16x8_t b = vandq_u16(mask, vld1q_u16(weights));
+#ifdef __aarch64__
+    return (uint8_t) vaddvq_u16(b);
+#else
+    uint16x4_t s = vadd_u16(vget_low_u16(b), vget_high_u16(b));
+    s = vpadd_u16(s, s);
+    return (uint8_t) vget_lane_u16(vpadd_u16(s, s), 0);
+#endif
+}
+
+// x * p (complex, Q15 phasor p), 8 lanes
+static inline __attribute__((always_inline))
+void coh_rot_neon(int16x8_t xr, int16x8_t xi, int16x8_t pr, int16x8_t pi, int16x8_t *rr, int16x8_t *ri)
+{
+    *rr = vsubq_s16(vqrdmulhq_s16(xr, pr), vqrdmulhq_s16(xi, pi));
+    *ri = vaddq_s16(vqrdmulhq_s16(xr, pi), vqrdmulhq_s16(xi, pr));
+}
+
+// One chip: 8 taps of interleaved I/Q at 12 MHz position t
+static inline __attribute__((always_inline))
+void coh_chip_neon(const int16_t *iq, int t, const int16x8_t *cv, int32_t *re, int32_t *im)
+{
+    const int n = t / 5, c = t % 5;
+    const int16x8x2_t v = vld2q_s16(iq + 2 * n);
+    int32x4_t si = vmull_s16(vget_low_s16(v.val[0]), vget_low_s16(cv[c]));
+    int32x4_t sq = vmull_s16(vget_low_s16(v.val[1]), vget_low_s16(cv[c]));
+    si = vmlal_s16(si, vget_high_s16(v.val[0]), vget_high_s16(cv[c]));
+    sq = vmlal_s16(sq, vget_high_s16(v.val[1]), vget_high_s16(cv[c]));
+    *re = coh_hsum_s32_neon(si);
+    *im = coh_hsum_s32_neon(sq);
+}
+
+// Chips of bits first .. first+n-1 (n a multiple of 4), int32, as [a.re, b.re] pairs etc.
+static void coh_chips32_neon(const int16_t *iq, int pos, int first, int n, const int16x8_t *cv,
+                             int32_t *r32, int32_t *i32)
+{
+    for (int k = 2 * first; k < 2 * (first + n); k++)
+        coh_chip_neon(iq, pos + COH_DATA_OFFSET + 6 * k, cv, &r32[k], &i32[k]);
+}
+
+// int32 chips k = 2*first .. -> int16 a/b (shift, clamp), 8 bits at a time
+static void coh_chips16_neon(const int32_t *r32, const int32_t *i32, int first, int n, int shift,
+                             int16_t *ar, int16_t *ai, int16_t *br, int16_t *bi)
+{
+    const int32x4_t sh = vdupq_n_s32(-shift);
+    const int32x4_t lim = vdupq_n_s32((1 << COH_CHIP_BITS) - 1), nlim = vdupq_n_s32(-((1 << COH_CHIP_BITS) - 1));
+    for (int i = first; i < first + n; i += 4) {
+        const int32x4x2_t r = vld2q_s32(r32 + 2 * i), q = vld2q_s32(i32 + 2 * i);   // val[0] = a, val[1] = b
+#define COH_CONV(v) vmovn_s32(vmaxq_s32(vminq_s32(vshlq_s32(v, sh), lim), nlim))
+        vst1_s16(ar + i, COH_CONV(r.val[0]));
+        vst1_s16(br + i, COH_CONV(r.val[1]));
+        vst1_s16(ai + i, COH_CONV(q.val[0]));
+        vst1_s16(bi + i, COH_CONV(q.val[1]));
+#undef COH_CONV
+    }
+}
+
+void STARCH_IMPL(coherent_decode, neon) (const int16_t * restrict iq, int pos, unsigned thres,
+                                         uint8_t * restrict out, uint32_t * restrict info)
+{
+    int32_t r32[2 * COH_BITS] __attribute__((aligned(16))), i32[2 * COH_BITS] __attribute__((aligned(16)));
+    int16_t ar[COH_BITS], ai[COH_BITS], br[COH_BITS], bi[COH_BITS];
+    int16_t Pr[COH_BITS], Pi[COH_BITS], Qr[COH_BITS], Qi[COH_BITS];
+    int16x8_t cv[5];
+    for (int c = 0; c < 5; c++)
+        cv[c] = vmovl_s8(vld1_s8(upsample_coeffs[c]));
+
+    memset(out, 0, 14);
+    memset(info, 0, COH_INFO_N * sizeof(*info));
+
+    // Stage 1 chips and their shift
+    coh_chips32_neon(iq, pos, 0, COH_EST_BITS, cv, r32, i32);
+    uint32x4_t mx = vdupq_n_u32(0);
+    for (int k = 0; k < 2 * COH_EST_BITS; k += 4) {
+        mx = vmaxq_u32(mx, vreinterpretq_u32_s32(vabsq_s32(vld1q_s32(r32 + k))));
+        mx = vmaxq_u32(mx, vreinterpretq_u32_s32(vabsq_s32(vld1q_s32(i32 + k))));
+    }
+#ifdef __aarch64__
+    const uint32_t cmax = vmaxvq_u32(mx);
+#else
+    uint32x2_t m2 = vmax_u32(vget_low_u32(mx), vget_high_u32(mx));
+    const uint32_t cmax = vget_lane_u32(vpmax_u32(m2, m2), 0);
+#endif
+    const int cs = coh_shift(cmax, COH_CHIP_BITS);
+    coh_chips16_neon(r32, i32, 0, COH_EST_BITS, cs, ar, ai, br, bi);
+
+    // Block sums of the pair sums (pair sums < 2^14 fit int16), normalised
+    int32_t bre[COH_NBLOCKS], bim[COH_NBLOCKS];
+    uint32_t bmax = 0;
+    for (int m = 0; m < COH_NBLOCKS; m++) {
+        const int i = m * COH_BLOCK;
+        bre[m] = coh_hsum_s16_neon(vaddq_s16(vld1q_s16(ar + i), vld1q_s16(br + i)));
+        bim[m] = coh_hsum_s16_neon(vaddq_s16(vld1q_s16(ai + i), vld1q_s16(bi + i)));
+        if (coh_abs(bre[m]) > bmax) bmax = coh_abs(bre[m]);
+        if (coh_abs(bim[m]) > bmax) bmax = coh_abs(bim[m]);
+    }
+    const int bs = coh_shift(bmax, COH_BLOCK_BITS);
+
+    // Coarse search, 8 bins per vector
+    int32_t p[COH_BINS_PAD] __attribute__((aligned(16)));
+    for (int j = 0; j < COH_BINS_PAD; j += 8) {
+        int16x8_t sre = vdupq_n_s16(0), sim = vdupq_n_s16(0);
+        for (int m = 0; m < COH_NBLOCKS; m++) {
+            int16x8_t rr, ri;
+            coh_rot_neon(vdupq_n_s16((int16_t) (bre[m] >> bs)), vdupq_n_s16((int16_t) (bim[m] >> bs)),
+                         vld1q_s16(&coh_bin_re[m][j]), vld1q_s16(&coh_bin_im[m][j]), &rr, &ri);
+            sre = vaddq_s16(sre, rr);
+            sim = vaddq_s16(sim, ri);
+        }
+        vst1q_s32(p + j, vmlal_s16(vmull_s16(vget_low_s16(sre), vget_low_s16(sre)), vget_low_s16(sim), vget_low_s16(sim)));
+        vst1q_s32(p + j + 4, vmlal_s16(vmull_s16(vget_high_s16(sre), vget_high_s16(sre)), vget_high_s16(sim), vget_high_s16(sim)));
+    }
+    const int f = coh_fine_index(p, coh_argmax(p, COH_BINS));
+    const int16_t rcr = coh_fine_chip[f][0], rci = coh_fine_chip[f][1];
+    const int16_t rbr = coh_fine_bit[f][0], rbi = coh_fine_bit[f][1];
+
+    // Phasors: first 8 one by one (as generic), then 8 at a time
+    Pr[0] = 32767; Pi[0] = 0;
+    for (int i = 1; i < 8; i++) {
+        Pr[i] = (int16_t) (coh_mulq15(Pr[i - 1], rbr) - coh_mulq15(Pi[i - 1], rbi));
+        Pi[i] = (int16_t) (coh_mulq15(Pr[i - 1], rbi) + coh_mulq15(Pi[i - 1], rbr));
+    }
+    const int16_t r8r = (int16_t) (coh_mulq15(Pr[7], rbr) - coh_mulq15(Pi[7], rbi));
+    const int16_t r8i = (int16_t) (coh_mulq15(Pr[7], rbi) + coh_mulq15(Pi[7], rbr));
+    for (int i = 8; i < COH_BITS; i += 8) {
+        int16x8_t rr, ri;
+        coh_rot_neon(vld1q_s16(Pr + i - 8), vld1q_s16(Pi + i - 8), vdupq_n_s16(r8r), vdupq_n_s16(r8i), &rr, &ri);
+        vst1q_s16(Pr + i, rr);
+        vst1q_s16(Pi + i, ri);
+    }
+    for (int i = 0; i < COH_BITS; i += 8) {
+        int16x8_t rr, ri;
+        coh_rot_neon(vld1q_s16(Pr + i), vld1q_s16(Pi + i), vdupq_n_s16(rcr), vdupq_n_s16(rci), &rr, &ri);
+        vst1q_s16(Qr + i, rr);
+        vst1q_s16(Qi + i, ri);
+    }
+
+    // Correlation over the first 56 bits
+    int32x4_t hre = vdupq_n_s32(0), him = vdupq_n_s32(0);
+    uint32x4_t e2v = vdupq_n_u32(0);
+    for (int i = 0; i < COH_EST_BITS; i += 8) {
+        int16x8_t xar, xai, xbr, xbi;
+        coh_rot_neon(vld1q_s16(ar + i), vld1q_s16(ai + i), vld1q_s16(Pr + i), vld1q_s16(Pi + i), &xar, &xai);
+        coh_rot_neon(vld1q_s16(br + i), vld1q_s16(bi + i), vld1q_s16(Qr + i), vld1q_s16(Qi + i), &xbr, &xbi);
+        const int16x8_t cre = vaddq_s16(xar, xbr), cim = vaddq_s16(xai, xbi);
+        hre = vpadalq_s16(hre, cre);
+        him = vpadalq_s16(him, cim);
+        const int16x8_t sr = vshrq_n_s16(cre, 4), si = vshrq_n_s16(cim, 4);
+        int32x4_t e = vmull_s16(vget_low_s16(sr), vget_low_s16(sr));
+        e = vmlal_s16(e, vget_high_s16(sr), vget_high_s16(sr));
+        e = vmlal_s16(e, vget_low_s16(si), vget_low_s16(si));
+        e = vmlal_s16(e, vget_high_s16(si), vget_high_s16(si));
+        e2v = vaddq_u32(e2v, vreinterpretq_u32_s32(e));
+    }
+    const int32_t h_re = coh_hsum_s32_neon(hre), h_im = coh_hsum_s32_neon(him);
+    const uint32_t rho2 = coh_rho2(h_re, h_im, coh_hsum_u32_neon(e2v));
+    info[COH_INFO_RHO2] = rho2;
+    info[COH_INFO_FINE] = (uint32_t) f;
+    if (rho2 < thres)
+        return;
+
+    // Stage 2 chips, then slice all 112 bits, one byte per vector
+    coh_chips32_neon(iq, pos, COH_EST_BITS, COH_BITS - COH_EST_BITS, cv, r32, i32);
+    coh_chips16_neon(r32, i32, COH_EST_BITS, COH_BITS - COH_EST_BITS, cs, ar, ai, br, bi);
+    int16_t gre, gim;
+    coh_channel16(h_re, h_im, &gre, &gim);
+    const int16x8_t gr = vdupq_n_s16(gre), gi = vdupq_n_s16(gim);
+    uint32x4_t qual[2] = { vdupq_n_u32(0), vdupq_n_u32(0) }, pw[2] = { vdupq_n_u32(0), vdupq_n_u32(0) };
+    for (int i = 0; i < COH_BITS; i += 8) {
+        int16x8_t xar, xai, xbr, xbi;
+        coh_rot_neon(vld1q_s16(ar + i), vld1q_s16(ai + i), vld1q_s16(Pr + i), vld1q_s16(Pi + i), &xar, &xai);
+        coh_rot_neon(vld1q_s16(br + i), vld1q_s16(bi + i), vld1q_s16(Qr + i), vld1q_s16(Qi + i), &xbr, &xbi);
+        const int16x8_t ya = vaddq_s16(vqrdmulhq_s16(xar, gr), vqrdmulhq_s16(xai, gi));
+        const int16x8_t yb = vaddq_s16(vqrdmulhq_s16(xbr, gr), vqrdmulhq_s16(xbi, gi));
+        out[i >> 3] = coh_bits8_neon(vcgtq_s16(ya, yb));
+        const int half = i >= COH_EST_BITS;
+        qual[half] = vpadalq_u16(qual[half], vreinterpretq_u16_s16(vabdq_s16(ya, yb)));
+        pw[half] = vpadalq_u16(pw[half], vreinterpretq_u16_s16(vaddq_s16(vabsq_s16(ya), vabsq_s16(yb))));
+    }
+    info[COH_INFO_DECODED] = 1;
+    info[COH_INFO_Q1] = coh_quality(coh_hsum_u32_neon(qual[0]), coh_hsum_u32_neon(pw[0]));
+    info[COH_INFO_Q2] = coh_quality(coh_hsum_u32_neon(qual[1]), coh_hsum_u32_neon(pw[1]));
 }

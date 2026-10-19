@@ -19,6 +19,84 @@ static int starch_regentry_rank_compare (const void *l, const void *r)
     return left->rank - right->rank;
 }
 
+/* dispatcher / registry for coherent_decode */
+
+starch_coherent_decode_regentry * starch_coherent_decode_select() {
+    for (starch_coherent_decode_regentry *entry = starch_coherent_decode_registry;
+         entry->name;
+         ++entry)
+    {
+        if (entry->flavor_supported && !(entry->flavor_supported()))
+            continue;
+        return entry;
+    }
+    return NULL;
+}
+
+static void starch_coherent_decode_dispatch ( const int16_t * arg0, int arg1, unsigned arg2, uint8_t * arg3, uint32_t * arg4 ) {
+    starch_coherent_decode_regentry *entry = starch_coherent_decode_select();
+    if (!entry)
+        abort();
+
+    starch_coherent_decode = entry->callable;
+    starch_coherent_decode ( arg0, arg1, arg2, arg3, arg4 );
+}
+
+starch_coherent_decode_ptr starch_coherent_decode = starch_coherent_decode_dispatch;
+
+void starch_coherent_decode_set_wisdom (const char * const * received_wisdom)
+{
+    /* re-rank the registry based on received wisdom */
+    starch_coherent_decode_regentry *entry;
+    for (entry = starch_coherent_decode_registry; entry->name; ++entry) {
+        const char * const *search;
+        for (search = received_wisdom; *search; ++search) {
+            if (!strcmp(*search, entry->name)) {
+                break;
+            }
+        }
+        if (*search) {
+            /* matches an entry in the wisdom list, order by position in the list */
+            entry->rank = search - received_wisdom;
+        } else {
+            /* no match, rank after all possible matches, retaining existing order */
+            entry->rank = (search - received_wisdom) + (entry - starch_coherent_decode_registry);
+        }
+    }
+
+    /* re-sort based on the new ranking */
+    qsort(starch_coherent_decode_registry, entry - starch_coherent_decode_registry, sizeof(starch_coherent_decode_regentry), starch_regentry_rank_compare);
+
+    /* reset the implementation pointer so the next call will re-select */
+    starch_coherent_decode = starch_coherent_decode_dispatch;
+}
+
+starch_coherent_decode_regentry starch_coherent_decode_registry[] = {
+  
+#ifdef STARCH_MIX_AARCH64
+    { 0, "neon_armv8_neon_simd", "armv8_neon_simd", starch_coherent_decode_neon_armv8_neon_simd, cpu_supports_armv8_simd },
+    { 1, "generic_armv8_neon_simd", "armv8_neon_simd", starch_coherent_decode_generic_armv8_neon_simd, cpu_supports_armv8_simd },
+    { 2, "generic_generic", "generic", starch_coherent_decode_generic_generic, NULL },
+#endif /* STARCH_MIX_AARCH64 */
+  
+#ifdef STARCH_MIX_ARM
+    { 0, "neon_armv7a_neon_vfpv4", "armv7a_neon_vfpv4", starch_coherent_decode_neon_armv7a_neon_vfpv4, cpu_supports_armv7_neon_vfpv4 },
+    { 1, "generic_armv7a_neon_vfpv4", "armv7a_neon_vfpv4", starch_coherent_decode_generic_armv7a_neon_vfpv4, cpu_supports_armv7_neon_vfpv4 },
+    { 2, "generic_generic", "generic", starch_coherent_decode_generic_generic, NULL },
+#endif /* STARCH_MIX_ARM */
+  
+#ifdef STARCH_MIX_GENERIC
+    { 0, "generic_generic", "generic", starch_coherent_decode_generic_generic, NULL },
+#endif /* STARCH_MIX_GENERIC */
+  
+#ifdef STARCH_MIX_X86
+    { 0, "avx2_x86_avx2", "x86_avx2", starch_coherent_decode_avx2_x86_avx2, cpu_supports_avx2 },
+    { 1, "generic_x86_avx2", "x86_avx2", starch_coherent_decode_generic_x86_avx2, cpu_supports_avx2 },
+    { 2, "generic_generic", "generic", starch_coherent_decode_generic_generic, NULL },
+#endif /* STARCH_MIX_X86 */
+    { 0, NULL, NULL, NULL, NULL }
+};
+
 /* dispatcher / registry for count_above_u16 */
 
 starch_count_above_u16_regentry * starch_count_above_u16_select() {
@@ -1027,6 +1105,10 @@ int starch_read_wisdom (const char * path)
         return -1;
 
     /* reset all ranks to identify entries not listed in the wisdom file; we'll assign ranks at the end to produce a stable sort */
+    int rank_coherent_decode = 0;
+    for (starch_coherent_decode_regentry *entry = starch_coherent_decode_registry; entry->name; ++entry) {
+        entry->rank = 0;
+    }
     int rank_count_above_u16 = 0;
     for (starch_count_above_u16_regentry *entry = starch_count_above_u16_registry; entry->name; ++entry) {
         entry->rank = 0;
@@ -1108,6 +1190,15 @@ int starch_read_wisdom (const char * path)
         *end = 0;
 
         /* try to find a matching registry entry */
+        if (!strcmp(name, "coherent_decode")) {
+            for (starch_coherent_decode_regentry *entry = starch_coherent_decode_registry; entry->name; ++entry) {
+                if (!strcmp(impl, entry->name)) {
+                    entry->rank = ++rank_coherent_decode;
+                    break;
+                }
+            }
+            continue;
+        }
         if (!strcmp(name, "count_above_u16")) {
             for (starch_count_above_u16_regentry *entry = starch_count_above_u16_registry; entry->name; ++entry) {
                 if (!strcmp(impl, entry->name)) {
@@ -1226,6 +1317,17 @@ int starch_read_wisdom (const char * path)
     fclose(fp);
 
     /* assign ranks to unmatched items to (stable) sort them last; re-sort everything */
+    {
+        starch_coherent_decode_regentry *entry;
+        for (entry = starch_coherent_decode_registry; entry->name; ++entry) {
+            if (!entry->rank)
+                entry->rank = ++rank_coherent_decode;
+        }
+        qsort(starch_coherent_decode_registry, entry - starch_coherent_decode_registry, sizeof(starch_coherent_decode_regentry), starch_regentry_rank_compare);
+
+        /* reset the implementation pointer so the next call will re-select */
+        starch_coherent_decode = starch_coherent_decode_dispatch;
+    }
     {
         starch_count_above_u16_regentry *entry;
         for (entry = starch_count_above_u16_registry; entry->name; ++entry) {

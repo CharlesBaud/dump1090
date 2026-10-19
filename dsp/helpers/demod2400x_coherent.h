@@ -1,0 +1,160 @@
+// demod2400x_coherent.h: shared pieces of the coherent_decode starch kernel
+// (dsp/impl/demod2400x.*.c). Every implementation uses these for the scalar steps,
+// so all of them give the same bits.
+//
+// coherent_decode(iq, pos, thres, out, info) decodes the frame whose preamble
+// starts at 12 MHz position pos, from 12-bit I/Q (DC removed), coherently:
+//
+// 1. Chips: complex filter outputs at t = pos + 96 + 6k (bit i: chips 2i, 2i+1),
+//    same polyphase table as upsample12, 16x16 -> 32-bit sums. Stage 1 does the
+//    first 56 bits; the chips are shifted so the largest is below 2^COH_CHIP_BITS
+//    and clamped to that, as int16.
+// 2. Pair sums x_a + x_b (one pulse per bit: a carrier sample whatever the data),
+//    7 block sums of 8 (one per byte), normalised below 2^COH_BLOCK_BITS.
+// 3. Coarse search: for each of 33 bins, sum over blocks (in block order) of
+//    rot(block, coh_bin[block][bin]) in int16; power re^2 + im^2 (int32); the first
+//    largest bin wins; parabola to 1/8 of a bin (coh_fine_index).
+// 4. Phasors P[i] = e^{-j 2 w i} per bit: P[0] = 32767, P[i] = rot(P[i-1], rb) for
+//    i < 8, then P[i] = rot(P[i-8], rb8) with rb8 = rot(P[7], rb). Q[i] = rot(rc, P[i])
+//    for the second chip of each bit (rc = e^{-j w}).
+// 5. Correlation over the first 56 bits: c_i = rot(x_a, P[i]) + rot(x_b, Q[i]) (int16),
+//    h = sum c_i (int32), e2 = sum (c.re>>4)^2 + (c.im>>4)^2 (uint32);
+//    rho2 = coh_rho2(h, e2) in 1/1024. Below 'thres' the frame stops here.
+// 6. Stage 2: chips of bits 56..111 with the same shift and clamp. Slice all 112 bits:
+//    g = h scaled below 2^15; y = mulq15(re, g.re) + mulq15(im, g.im) for rot(x_a, P[i])
+//    and rot(x_b, Q[i]); bit = 1 if y_a > y_b. Qualities 256 sum|y_a - y_b| /
+//    (sum (|y_a| + |y_b|) + 1) for each 56-bit half.
+//
+// rot(x, p) = (mulq15(x.re, p.re) - mulq15(x.im, p.im), mulq15(x.re, p.im) + mulq15(x.im, p.re))
+// with mulq15(a, b) = (a*b + 2^14) >> 15 (NEON vqrdmulh, AVX2/SSSE3 mulhrs).
+//
+// out[14] gets the bits (zero if stopped at the gate); info[COH_INFO_N] the results.
+
+#ifndef DEMOD2400X_COHERENT_H
+#define DEMOD2400X_COHERENT_H
+
+#include <stdint.h>
+#include <string.h>
+
+#include "dsp/helpers/demod2400x_coeffs.h"
+#include "dsp/helpers/demod2400x_coh_tables.h"
+
+#define COH_EST_BITS    56      // estimate over the first 56 bits
+#define COH_BITS        112
+#define COH_CHIP_BITS   13      // chips below 2^13: rotated < 2^13 * sqrt(2), pair sums < 2^15
+#define COH_BLOCK_BITS  11      // block sums below 2^11: 7 rotated < 2^15
+#define COH_DATA_OFFSET 96      // 16 preamble chips * 6 (12 MHz positions)
+
+// info[] layout
+#define COH_INFO_DECODED 0      // 1 if the frame passed the gate and was sliced
+#define COH_INFO_RHO2    1      // carrier coherence in 1/1024 (1024 = perfect)
+#define COH_INFO_Q1      2      // quality of bits 0..55 (0..256)
+#define COH_INFO_Q2      3      // quality of bits 56..111
+#define COH_INFO_FINE    4      // fine frequency index (0..COH_FINE_BINS-1, centre = 0 Hz)
+#define COH_INFO_N       5
+
+// Samples the kernel reads: iq[0 .. 2 * coh_iq_needed(pos)) (I/Q pairs up to that index)
+static inline unsigned coh_iq_needed(int pos)
+{
+    return (unsigned) ((pos + COH_DATA_OFFSET + 6 * (2 * COH_BITS - 1)) / 5 + 8);
+}
+
+static inline int16_t coh_mulq15(int16_t a, int16_t b)
+{
+    return (int16_t) (((int32_t) a * b + (1 << 14)) >> 15);
+}
+
+static inline int coh_bits(uint32_t v)
+{
+    return v ? 32 - __builtin_clz(v) : 0;
+}
+
+// Shift that brings vmax below 2^bits
+static inline int coh_shift(uint32_t vmax, int bits)
+{
+    const int n = coh_bits(vmax);
+    return n > bits ? n - bits : 0;
+}
+
+static inline uint32_t coh_abs(int32_t v)
+{
+    return v < 0 ? (uint32_t) -v : (uint32_t) v;
+}
+
+// Shift and clamp a chip value to int16 below 2^COH_CHIP_BITS
+static inline int16_t coh_chip16(int32_t v, int shift)
+{
+    const int32_t lim = (1 << COH_CHIP_BITS) - 1;
+    v >>= shift;
+    return (int16_t) (v > lim ? lim : v < -lim ? -lim : v);
+}
+
+// One chip: filter output at 12 MHz position t (|s| < 2^19)
+static inline void coh_chip(const int16_t *iq, int t, int32_t *re, int32_t *im)
+{
+    const int n = t / 5, c = t % 5;
+    int32_t si = 0, sq = 0;
+    for (int j = 0; j < 8; j++) {
+        si += upsample_coeffs[c][j] * iq[2 * (n + j)];
+        sq += upsample_coeffs[c][j] * iq[2 * (n + j) + 1];
+    }
+    *re = si;
+    *im = sq;
+}
+
+// Fine frequency index from the bin powers: parabola through the best bin and its
+// neighbours, rounded to 1/COH_FINE of a bin (powers >> 4 keep it in int32)
+static inline int coh_fine_index(const int32_t *p, int best)
+{
+    int f = best * COH_FINE;
+    if (best > 0 && best < COH_BINS - 1) {
+        const int32_t pm = p[best - 1] >> 4, p0 = p[best] >> 4, pp = p[best + 1] >> 4;
+        const int32_t den = 2 * (2 * p0 - pm - pp);
+        if (den > 0) {
+            const int32_t num = COH_FINE * (pp - pm);
+            int32_t d = (num >= 0 ? num + den / 2 : num - den / 2) / den;
+            if (d > COH_FINE / 2) d = COH_FINE / 2;
+            if (d < -COH_FINE / 2) d = -COH_FINE / 2;
+            f += d;
+        }
+    }
+    return f;
+}
+
+// First largest of n powers
+static inline int coh_argmax(const int32_t *p, int n)
+{
+    int best = 0;
+    for (int j = 1; j < n; j++)
+        if (p[j] > p[best])
+            best = j;
+    return best;
+}
+
+// rho2 = |h|^2 / (56 sum |c|^2) in 1/1024; e2 holds sum |c >> 4|^2, so
+// rho2 = 2^8 |h>>8|^2 / (56 e2) (|h| < 2^21, |h>>8|^2 < 2^27)
+static inline uint32_t coh_rho2(int32_t hre, int32_t him, uint32_t e2)
+{
+    if (!e2)
+        return 0;
+    const int32_t hr = hre >> 8, hi = him >> 8;
+    const uint64_t h2 = (uint64_t) ((uint32_t) (hr * hr) + (uint32_t) (hi * hi));
+    const uint64_t r = (h2 << 18) / ((uint64_t) COH_EST_BITS * e2);
+    return r > 0xffffffffU ? 0xffffffffU : (uint32_t) r;
+}
+
+// Channel for slicing: h scaled below 2^15 (clamped to +-32767)
+static inline void coh_channel16(int32_t hre, int32_t him, int16_t *gre, int16_t *gim)
+{
+    const int s = coh_shift(coh_abs(hre) > coh_abs(him) ? coh_abs(hre) : coh_abs(him), 15);
+    int32_t re = hre >> s, im = him >> s;
+    *gre = (int16_t) (re > 32767 ? 32767 : re < -32767 ? -32767 : re);
+    *gim = (int16_t) (im > 32767 ? 32767 : im < -32767 ? -32767 : im);
+}
+
+static inline unsigned coh_quality(uint32_t qual, uint32_t pw)
+{
+    return 256 * qual / (pw + 1);                 // qual, pw < 56 * 2^15: no overflow
+}
+
+#endif

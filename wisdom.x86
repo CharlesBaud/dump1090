@@ -50,3 +50,8 @@ iqdata_conv_sc16q11                      generic_generic                        
 decode_bits                              avx2_x86_avx2
 decode_bits                              generic_x86_avx2
 decode_bits                              generic_generic
+
+# DEMOD_2400X coherent decode: provisional order (hand-written AVX2 first)
+coherent_decode                          avx2_x86_avx2
+coherent_decode                          generic_x86_avx2
+coherent_decode                          generic_generic

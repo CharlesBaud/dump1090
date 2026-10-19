@@ -16,27 +16,10 @@
 
 #if defined(DEMOD_2400X) && defined(DEMOD_2400X_COHERENT)
 
-#include <math.h>
-
 #include "demod_2400x_coherent.h"
 #include "dsp/helpers/demod2400x_coherent.h"
 
 float coh_last_freq_hz, coh_last_amp;     // experiment: last estimate, for diagnostics
-
-const struct coherent_config *coherentConfig(void)
-{
-    static struct coherent_config cfg;
-    static int init;
-    if (!init) {
-        const char *s;
-        init = 1;
-        cfg.enabled = (s = getenv("DEMOD_COHERENT")) ? atoi(s) : 1;        // built in: on unless DEMOD_COHERENT=0
-        cfg.gate = (s = getenv("COH_GATE")) ? (unsigned) atoi(s) : 96;
-        cfg.rho2 = (s = getenv("COH_RHO2")) ? (float) atof(s) : 0.6f;
-        cfg.diag = (s = getenv("COH_DIAG")) ? atoi(s) : 0;
-    }
-    return &cfg;
-}
 
 // For the chip-sample dump: chips (int32 I, Q) at pos + 6k, k = 0 .. nchips-1
 int coherentChips(const int16_t *iq, unsigned iq_len, int pos, int32_t (*chips)[2], int nchips)
@@ -48,19 +31,18 @@ int coherentChips(const int16_t *iq, unsigned iq_len, int pos, int32_t (*chips)[
     return 0;
 }
 
-// Bounds check, then the starch kernel; the gate threshold is passed in 1/1024 so the
-// kernel can skip the second half of frames that aren't coherent
+// Bounds check, then the starch kernel; the rho2 gate lets the kernel skip the
+// second half of frames that aren't coherent
 int coherentDecode(const int16_t *iq, unsigned iq_len, int pos,
-                   uint8_t *out, unsigned *q1, unsigned *q2, float *rho2)
+                   uint8_t *out, unsigned *q1, unsigned *q2, unsigned *rho2)
 {
-    const struct coherent_config *cfg = coherentConfig();
     uint32_t info[COH_INFO_N];
 
     if (pos < 0 || coh_iq_needed(pos) > iq_len)
         return -1;
 
-    starch_coherent_decode(iq, pos, (unsigned) lrintf(cfg->rho2 * 1024), out, info);
-    *rho2 = info[COH_INFO_RHO2] / 1024.0f;
+    starch_coherent_decode(iq, pos, COHERENT_RHO2, out, info);
+    *rho2 = info[COH_INFO_RHO2];
     *q1 = info[COH_INFO_Q1];
     *q2 = info[COH_INFO_Q2];
     coh_last_freq_hz = (float) ((-62500.0 + 125000.0 * info[COH_INFO_FINE] / (COH_FINE_BINS - 1)));

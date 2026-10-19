@@ -47,8 +47,7 @@ static double cohNow(void)
 
 static void cohReport(void)
 {
-    const struct coherent_config *cfg = coherentConfig();
-    fprintf(stderr, "coherent: quality gate %u, rho2 gate %.2f\n", cfg->gate, cfg->rho2);
+    fprintf(stderr, "coherent: quality gate %u, rho2 gate %.2f\n", COHERENT_GATE, COHERENT_RHO2 / 1024.0);
     fprintf(stderr, "coherent: %lu attempts, %lu coherent (rho2), %lu rescued (%lu known aircraft, %lu unknown), %.0f ms\n",
             coh_stats.attempts, coh_stats.coherent, coh_stats.rescued, coh_stats.rescued_known, coh_stats.rescued_unknown,
             coh_stats.seconds * 1e3);
@@ -404,14 +403,13 @@ static int emitFrame(const struct mag_buf *mag, const struct candidate *c,
     int score = scoreModesMessage(c->msg);
 
 #ifdef DEMOD_2400X_COHERENT
-    const struct coherent_config *coh = coherentConfig();
     const struct candidate *mag_c = c;      // the magnitude decoder's candidate
     struct candidate cc;                    // its coherent version, if that decodes
 
     // Coherent second pass for frames the magnitude bits don't decode. Only worth
     // trying for candidates whose bits already look fairly clean (quality gate);
     // the kernel itself stops early when the carrier isn't coherent (rho2 gate).
-    if (score < SR_ACCEPT_THRESHOLD && coh->enabled && c->quality >= coh->gate) {
+    if (score < SR_ACCEPT_THRESHOLD && c->quality >= COHERENT_GATE) {
         static int registered;
         if (!registered) {
             registered = 1;
@@ -419,8 +417,7 @@ static int emitFrame(const struct mag_buf *mag, const struct candidate *c,
                 atexit(cohReport);
         }
         const double t0 = cohNow();
-        unsigned q1;
-        float rho2;
+        unsigned q1, rho2;
         cc = *c;
         const int qb = c->quality / 16 < 16 ? c->quality / 16 : 16;
         if (coherentDecode(iq, mag->validLength, c->pos, cc.msg, &q1, &cc.quality2, &rho2) == 0) {
@@ -429,7 +426,7 @@ static int emitFrame(const struct mag_buf *mag, const struct candidate *c,
         }
         else
             rho2 = 0;
-        if (rho2 >= coh->rho2) {
+        if (rho2 >= COHERENT_RHO2) {
             coh_stats.coherent++;
             coh_stats.q_coherent[qb]++;
             const int s2 = scoreModesMessage(cc.msg);
@@ -482,16 +479,15 @@ static int emitFrame(const struct mag_buf *mag, const struct candidate *c,
 
     // Diagnostic: bit errors of the magnitude and coherent decoders on frames whose
     // correct bits are known (accepted by the magnitude bits alone)
-    if (coh->diag && c == mag_c) {
+    if (COHERENT_DIAG && c == mag_c) {
         static int registered;
         if (!registered) {
             registered = 1;
             atexit(cohReport);
         }
         uint8_t cmsg[MODES_LONG_MSG_BYTES];
-        unsigned q1, q2;
-        float rho2;
-        if (coherentDecode(iq, mag->validLength, c->pos, cmsg, &q1, &q2, &rho2) == 0 && rho2 >= coh->rho2) {
+        unsigned q1, q2, rho2;
+        if (coherentDecode(iq, mag->validLength, c->pos, cmsg, &q1, &q2, &rho2) == 0 && rho2 >= COHERENT_RHO2) {
             const unsigned em = bitErrors(c->msg, mm.msg, mm.msgbits), ec = bitErrors(cmsg, mm.msg, mm.msgbits);
             coh_stats.diag_frames++;
             coh_stats.diag_mag_err[em < 3 ? em : 3]++;

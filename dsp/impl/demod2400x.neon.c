@@ -684,6 +684,21 @@ void coh_rot_neon(int16x8_t xr, int16x8_t xi, int16x8_t pr, int16x8_t pi, int16x
     *ri = vaddq_s16(vqrdmulhq_s16(xr, pi), vqrdmulhq_s16(xi, pr));
 }
 
+#ifdef __aarch64__
+// One chip's partial sums, I/Q kept interleaved: 8 complex taps loaded as they are and
+// multiplied by the interleaved coefficients [c0, c0, c1, c1, ..] (ci[0] taps 0..3,
+// ci[1] taps 4..7), giving lanes [I, Q, I, Q] (each I and Q split over two lanes)
+static inline __attribute__((always_inline))
+int32x4_t coh_chip_partial_neon(const int16_t *iq, int t, const int16x8_t (*ci)[2])
+{
+    const int n = t / 5, c = t % 5;
+    const int16x8_t v0 = vld1q_s16(iq + 2 * n), v1 = vld1q_s16(iq + 2 * n + 8);
+    int32x4_t s = vmull_s16(vget_low_s16(v0), vget_low_s16(ci[c][0]));
+    s = vmlal_high_s16(s, v0, ci[c][0]);
+    s = vmlal_s16(s, vget_low_s16(v1), vget_low_s16(ci[c][1]));
+    return vmlal_high_s16(s, v1, ci[c][1]);
+}
+#else
 // One chip: 8 taps of interleaved I/Q at 12 MHz position t (vld2 splits I and Q;
 // the 5 tap sets alternate with the chip because 6k mod 5 = k mod 5)
 static inline __attribute__((always_inline))
@@ -698,55 +713,47 @@ void coh_chip_neon(const int16_t *iq, int t, const int16x8_t *cv, int32_t *re, i
     *re = coh_hsum_s32_neon(si);
     *im = coh_hsum_s32_neon(sq);
 }
-
-#ifdef __aarch64__
-// Partial sums (4 lanes each) of one chip's I and Q, before the horizontal add
-static inline __attribute__((always_inline))
-void coh_chip_partial_neon(const int16_t *iq, int t, const int16x8_t *cv, int32x4_t *si, int32x4_t *sq)
-{
-    const int n = t / 5, c = t % 5;
-    const int16x8x2_t v = vld2q_s16(iq + 2 * n);
-    *si = vmlal_high_s16(vmull_s16(vget_low_s16(v.val[0]), vget_low_s16(cv[c])), v.val[0], cv[c]);
-    *sq = vmlal_high_s16(vmull_s16(vget_low_s16(v.val[1]), vget_low_s16(cv[c])), v.val[1], cv[c]);
-}
 #endif
 
-// Chips of bits first .. first+n-1 (n even), int32, in chip order (a, b of each bit)
+// Chips of bits first .. first+n-1 (n even), int32 I/Q interleaved, in chip order
+// (a, b of each bit): c32[2k] = I, c32[2k+1] = Q of chip k
 static void coh_chips32_neon(const int16_t *iq, int pos, int first, int n, const int16x8_t *cv,
-                             int32_t *r32, int32_t *i32)
+                             const int16x8_t (*ci)[2], int32_t *c32)
 {
 #ifdef __aarch64__
-    // 4 chips at a time: instead of a full horizontal add per chip, three pairwise adds
-    // reduce the four chips' partial sums into one vector [chip0, chip1, chip2, chip3]
+    // Two chips at a time: the 64-bit halves of their partial sums, zipped and added,
+    // give [I0, Q0, I1, Q1] directly in the interleaved layout
+    (void) cv;
     for (int k = 2 * first; k < 2 * (first + n); k += 4) {
         const int t = pos + COH_DATA_OFFSET + 6 * k;
-        int32x4_t i0, i1, i2, i3, q0, q1, q2, q3;
-        coh_chip_partial_neon(iq, t, cv, &i0, &q0);
-        coh_chip_partial_neon(iq, t + 6, cv, &i1, &q1);
-        coh_chip_partial_neon(iq, t + 12, cv, &i2, &q2);
-        coh_chip_partial_neon(iq, t + 18, cv, &i3, &q3);
-        vst1q_s32(r32 + k, vpaddq_s32(vpaddq_s32(i0, i1), vpaddq_s32(i2, i3)));
-        vst1q_s32(i32 + k, vpaddq_s32(vpaddq_s32(q0, q1), vpaddq_s32(q2, q3)));
+        const int32x4_t s0 = coh_chip_partial_neon(iq, t, ci), s1 = coh_chip_partial_neon(iq, t + 6, ci);
+        const int32x4_t s2 = coh_chip_partial_neon(iq, t + 12, ci), s3 = coh_chip_partial_neon(iq, t + 18, ci);
+#define COH_FOLD(a, b) vaddq_s32(vreinterpretq_s32_s64(vzip1q_s64(vreinterpretq_s64_s32(a), vreinterpretq_s64_s32(b))), \
+                                 vreinterpretq_s32_s64(vzip2q_s64(vreinterpretq_s64_s32(a), vreinterpretq_s64_s32(b))))
+        vst1q_s32(c32 + 2 * k, COH_FOLD(s0, s1));
+        vst1q_s32(c32 + 2 * k + 4, COH_FOLD(s2, s3));
+#undef COH_FOLD
     }
 #else
+    (void) ci;
     for (int k = 2 * first; k < 2 * (first + n); k++)
-        coh_chip_neon(iq, pos + COH_DATA_OFFSET + 6 * k, cv, &r32[k], &i32[k]);
+        coh_chip_neon(iq, pos + COH_DATA_OFFSET + 6 * k, cv, &c32[2 * k], &c32[2 * k + 1]);
 #endif
 }
 
-// int32 chips k = 2*first .. -> int16 a/b (shift, clamp), 8 bits at a time
-static void coh_chips16_neon(const int32_t *r32, const int32_t *i32, int first, int n, int shift,
+// int32 chips of bits first .. -> int16 a/b (shift, clamp), 4 bits at a time
+static void coh_chips16_neon(const int32_t *c32, int first, int n, int shift,
                              int16_t *ar, int16_t *ai, int16_t *br, int16_t *bi)
 {
     const int32x4_t sh = vdupq_n_s32(-shift);
     const int32x4_t lim = vdupq_n_s32((1 << COH_CHIP_BITS) - 1), nlim = vdupq_n_s32(-((1 << COH_CHIP_BITS) - 1));
     for (int i = first; i < first + n; i += 4) {
-        const int32x4x2_t r = vld2q_s32(r32 + 2 * i), q = vld2q_s32(i32 + 2 * i);   // val[0] = a, val[1] = b
+        const int32x4x4_t v = vld4q_s32(c32 + 4 * i);       // a.re, a.im, b.re, b.im of 4 bits
 #define COH_CONV(v) vmovn_s32(vmaxq_s32(vminq_s32(vshlq_s32(v, sh), lim), nlim))
-        vst1_s16(ar + i, COH_CONV(r.val[0]));
-        vst1_s16(br + i, COH_CONV(r.val[1]));
-        vst1_s16(ai + i, COH_CONV(q.val[0]));
-        vst1_s16(bi + i, COH_CONV(q.val[1]));
+        vst1_s16(ar + i, COH_CONV(v.val[0]));
+        vst1_s16(ai + i, COH_CONV(v.val[1]));
+        vst1_s16(br + i, COH_CONV(v.val[2]));
+        vst1_s16(bi + i, COH_CONV(v.val[3]));
 #undef COH_CONV
     }
 }
@@ -754,22 +761,26 @@ static void coh_chips16_neon(const int32_t *r32, const int32_t *i32, int first, 
 void STARCH_IMPL(coherent_decode, neon) (const int16_t * restrict iq, int pos, unsigned thres,
                                          uint8_t * restrict out, uint32_t * restrict info)
 {
-    int32_t r32[2 * COH_BITS] __attribute__((aligned(16))), i32[2 * COH_BITS] __attribute__((aligned(16)));
+    int32_t c32[4 * COH_BITS] __attribute__((aligned(16)));
     int16_t ar[COH_BITS], ai[COH_BITS], br[COH_BITS], bi[COH_BITS];
     int16_t Pr[COH_BITS], Pi[COH_BITS], Qr[COH_BITS], Qi[COH_BITS];
-    int16x8_t cv[5];
-    for (int c = 0; c < 5; c++)
+    int16x8_t cv[5], ci[5][2];
+    for (int c = 0; c < 5; c++) {
         cv[c] = vmovl_s8(vld1_s8(upsample_coeffs[c]));
+        const int16x8x2_t z = vzipq_s16(cv[c], cv[c]);        // [c0, c0, c1, c1, ..]
+        ci[c][0] = z.val[0];
+        ci[c][1] = z.val[1];
+    }
 
     memset(out, 0, 14);
     memset(info, 0, COH_INFO_N * sizeof(*info));
 
     // Stage 1 chips and their shift
-    coh_chips32_neon(iq, pos, 0, COH_EST_BITS, cv, r32, i32);
+    coh_chips32_neon(iq, pos, 0, COH_EST_BITS, cv, (const int16x8_t (*)[2]) ci, c32);
     uint32x4_t mx = vdupq_n_u32(0);
-    for (int k = 0; k < 2 * COH_EST_BITS; k += 4) {
-        mx = vmaxq_u32(mx, vreinterpretq_u32_s32(vabsq_s32(vld1q_s32(r32 + k))));
-        mx = vmaxq_u32(mx, vreinterpretq_u32_s32(vabsq_s32(vld1q_s32(i32 + k))));
+    for (int k = 0; k < 4 * COH_EST_BITS; k += 8) {
+        mx = vmaxq_u32(mx, vreinterpretq_u32_s32(vabsq_s32(vld1q_s32(c32 + k))));
+        mx = vmaxq_u32(mx, vreinterpretq_u32_s32(vabsq_s32(vld1q_s32(c32 + k + 4))));
     }
 #ifdef __aarch64__
     const uint32_t cmax = vmaxvq_u32(mx);
@@ -778,7 +789,7 @@ void STARCH_IMPL(coherent_decode, neon) (const int16_t * restrict iq, int pos, u
     const uint32_t cmax = vget_lane_u32(vpmax_u32(m2, m2), 0);
 #endif
     const int cs = coh_shift(cmax, COH_CHIP_BITS);
-    coh_chips16_neon(r32, i32, 0, COH_EST_BITS, cs, ar, ai, br, bi);
+    coh_chips16_neon(c32, 0, COH_EST_BITS, cs, ar, ai, br, bi);
 
     // Block sums of the pair sums (pair sums < 2^14 fit int16), normalised
     int32_t bre[COH_NBLOCKS], bim[COH_NBLOCKS];
@@ -858,8 +869,8 @@ void STARCH_IMPL(coherent_decode, neon) (const int16_t * restrict iq, int pos, u
         return;
 
     // Stage 2 chips, then slice all 112 bits, one byte per vector
-    coh_chips32_neon(iq, pos, COH_EST_BITS, COH_BITS - COH_EST_BITS, cv, r32, i32);
-    coh_chips16_neon(r32, i32, COH_EST_BITS, COH_BITS - COH_EST_BITS, cs, ar, ai, br, bi);
+    coh_chips32_neon(iq, pos, COH_EST_BITS, COH_BITS - COH_EST_BITS, cv, (const int16x8_t (*)[2]) ci, c32);
+    coh_chips16_neon(c32, COH_EST_BITS, COH_BITS - COH_EST_BITS, cs, ar, ai, br, bi);
     COH_PHASORS(COH_EST_BITS, COH_BITS)
 #undef COH_PHASORS
     int16_t gre, gim;

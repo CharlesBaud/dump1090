@@ -139,6 +139,8 @@ Generic is the reference; NEON and AVX2 must match it exactly, which
 ## Possible next steps
 
 * Coherent demodulation as a fallback when magnitude demodulation fails,
-  reusing the I/Q kept in the FIFO.
+  reusing the I/Q kept in the FIFO: done on branch `demod-2400x-coherent`,
+  see [COHERENT-demod2400x.md](COHERENT-demod2400x.md).
 * An early DF check before decoding the second half and scoring.
-* Real x86 timings for `wisdom.x86` (`decode_bits` order is provisional).
+* Real x86 timings for `wisdom.x86` (`decode_bits` and `coherent_decode`
+  orders are provisional).

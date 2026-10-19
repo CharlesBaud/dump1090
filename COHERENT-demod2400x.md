@@ -262,11 +262,11 @@ then ported to integer C.
 * `coh_samples.py`: reader for the `COHERENT_SAMPLES` dump. Build with e.g.
   `make CPPFLAGS='-DCOHERENT_SAMPLES=\"chips.bin\" -DCOHERENT_SAMPLES_GATE=96u'`.
   Keep test runs short: the dump is about 2 KB per frame.
-* `coh_acq.py chips.bin [records]`: the floating-point model of the method,
-  with the variants compared during development (window lengths, FFT, block
-  sizes).
-* `coh_max.py chips.bin [records]`: carrier samples from the larger chip
-  against the pair sum `a + b`.
+* `coh_acq.py chips.bin [records]`: the floating-point model of the first
+  version (pair sums), with the variants compared during development (window
+  lengths, FFT, block sizes).
+* `coh_larger.py chips.bin [records]`: carrier samples from the larger chip
+  (as the kernel does now) against the pair sum `a + b`.
 * `coh_snr.py chips.bin [records]`: decision SNR of the magnitude and
   coherent decoders on frames whose bits are known.
 * `coh_judge.py`: CRC check used by the scripts to judge a rescue.

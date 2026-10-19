@@ -1,5 +1,7 @@
 # Constant-frequency coherent decode (crystal transmitters): a correlator bank over
 # frequency on the pair sums gives the frequency and the complex channel h; no tracking.
+# This is the model of the first version; the kernel now takes the larger chip of each
+# bit instead of the pair sum (see coh_larger.py).
 # Window: 56 bits, or 112 when the magnitude quality2 says the frame is long.
 # Usage: coh_acq.py chips.bin [records]
 import sys, numpy as np

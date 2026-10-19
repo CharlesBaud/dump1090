@@ -1,7 +1,8 @@
 # Use of generative AI on this branch
 
-This branch (`demod-2400x`) contains code and text written with Claude Code
-(Anthropic, Claude Opus models), working under my direction.
+This branch (`demod-2400x`, and `demod-2400x-coherent` built on it) contains
+code and text written with Claude Code (Anthropic, Claude Opus models),
+working under my direction.
 
 ## Who did what
 
@@ -22,6 +23,16 @@ notably the vectorised `locate_preamble`, the exact integer square root, the
 NEON `upsample12` and the DC removal in the input converters
 (`3a7afd3`, `5a51c13`, `d70f5d4`, `0f244bc`). The `sim/` tools,
 README-demod2400x.md and this file were also written with Claude Code.
+
+The coherent second pass (`demod-2400x-coherent`) follows my specification:
+a separate file called from `emitFrame()` for frames the magnitude bits
+don't decode, the frequency and phase estimated from the first 56 bits, a
+correlator (matched filter) in blocks of 8 bits rather than an FFT or phase
+angles, integer arithmetic (int16 where possible), transmitters without a
+stable carrier left alone, and each bit's carrier sample taken from the chip
+with the larger magnitude. Claude Code wrote the Python models, the kernel
+and its SIMD versions, and ran the comparisons, under my review.
+COHERENT-demod2400x.md was also written with Claude Code.
 
 ## How it was checked
 

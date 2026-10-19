@@ -1,6 +1,7 @@
-# Carrier samples per bit: pair sum a+b (first version) against max(a, b), the chip with
-# the larger magnitude (used by the kernel). Same method otherwise: 7 blocks of 8, 33 bins, parabola, exact
-# correlation, rho2 gate, fixed-rotation slicing. Usage: coh_max.py chips.bin [records]
+# Carrier sample of each bit: the pair sum a + b (first version) against the chip with
+# the larger magnitude, a if |a|^2 >= |b|^2 else b, used as it is (complex), as the
+# kernel now does. Same method otherwise: 7 blocks of 8, 33 bins, parabola, exact
+# correlation, rho2 gate, fixed-rotation slicing. Usage: coh_larger.py chips.bin [records]
 import sys, numpy as np
 import os; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import coh_samples as cs
@@ -42,7 +43,7 @@ mask = np.arange(112)[None, :] < np.where(df >= 16, 112, 56)[:, None]
 xf, mbf = d['x'][~acc].astype(np.complex128), d['mag_bits'][~acc]
 mag_ok = np.array([judge(b, known)[0] for b in mbf])
 print(f"{acc.sum()} accepted frames, {(~acc).sum()} failed candidates")
-for mode in ('sum', 'max'):
+for mode in ('sum', 'larger'):
     w, h, rho2 = acquire(xg, mode)
     e = ((slice_fixed(xg, w, h) != good) & mask).sum(1)
     wf, hf, rf = acquire(xf, mode)

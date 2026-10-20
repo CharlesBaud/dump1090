@@ -237,8 +237,8 @@ implementations that give bit-identical results:
 | Generic C (Pi 5) | 4.2 µs | 1.6 µs |
 | NEON, aarch64 (Pi 5) | 1.80 µs | 0.81 µs |
 | NEON, ARMv7 (Pi 5, 32-bit) | 2.44 µs | 1.12 µs |
-| NEON, aarch64 (Pi 4) | not yet remeasured (2.9 µs with one estimate) | 1.58 µs |
-| NEON, ARMv7 (Pi 3B, 32-bit) | 12.2 µs | 5.7 µs |
+| NEON, aarch64 (Pi 4) | 3.40 µs | 1.53 µs |
+| NEON, ARMv7 (Pi 3B, 32-bit) | 11.8 µs | 5.5 µs |
 | AVX2 | checked under QEMU only, not yet timed | |
 
 Most frames stop at the gate, so the cost is dominated by the first half:

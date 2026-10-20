@@ -190,15 +190,15 @@ which then doesn't have the two options.
 ## Raspberry Pi 3B
 
 A Pi 3 Model B (Rev 1.2, Cortex-A53 at 1.2 GHz) running Volumio, a 32-bit OS,
-so the ARMv7 NEON kernels. Static ARMv7 builds of the dev branch, decoding
+so the ARMv7 NEON kernels. A static ARMv7 build of the dev branch, decoding
 the first 20 s of the Pi 4 capture (`--fix`); the messages are identical to
 the Pi 5's.
 
-| Build | Messages | Demodulation per 20 s | One core |
+| Run | Messages | Demodulation per 20 s | One core |
 |---|---|---|---|
-| Stock | 24,345 | 2.8 s | 14% |
-| DEMOD_2400X | 28,051 | 10.9 s | 54% |
-| DEMOD_2400X + coherent | 30,974 | 12.6 s | 63% |
+| `--no-demod2400x` (stock) | 24,345 | 2.8 s | 14% |
+| `--no-coherent` | 28,051 | 11.0 s | 55% |
+| default (DEMOD_2400X + coherent) | 30,971 | 12.6 s | 63% |
 
 Kernel times on the Pi 3B (NEON) against the Pi 5 (aarch64 NEON):
 
@@ -206,13 +206,13 @@ Kernel times on the Pi 3B (NEON) against the Pi 5 (aarch64 NEON):
 |---|---|---|
 | `upsample12` | 12.8 ms | 1.54 ms |
 | `locate_preamble` | 15.6 / 10.5 ms | 1.64 / 1.22 ms |
-| `coherent_decode` (full / stopped at the gate) | 12.2 / 5.7 µs | 1.85 / 0.85 µs |
+| `coherent_decode` (full / stopped at the gate) | 11.8 / 5.5 µs | 1.80 / 0.81 µs |
 
 So a Pi 3B can run it live, at roughly 65–70% of one core once USB input and
 the rest are added (on the Pi 4 they add about 4 points). The upsampler and
 preamble search, about 80% of it, cost the same whatever the traffic. The
 risk is thermal throttling: at 600 MHz it could not keep up, so a heatsink
-is advisable. Without the coherent pass it is about 54%.
+is advisable. With `--no-coherent` it is about 55%.
 
 The static `dump1090` for ARMv7 needs `-lncurses`, which the cross-compiler
 doesn't have; ncurses is only used by interactive mode, so the test build

@@ -102,13 +102,14 @@ Demodulation time for the 60 s capture:
 | | Stock | DEMOD_2400X | + coherent |
 |---|---|---|---|
 | Raspberry Pi 5 (Cortex-A76) | 2.0 s | 4.3 s (gcc 14), 4.1 s (clang 19) | about 0.8 s more |
-| Raspberry Pi 4 (Cortex-A72) | 3.9 s | 10.6 s | not measured yet |
-| Raspberry Pi 3B (Cortex-A53, 32-bit) | 8.5 s | 32.6 s | 37.9 s |
+| Raspberry Pi 4 (Cortex-A72) | 3.8 s | 11.0 s | 12.4 s |
+| Raspberry Pi 3B (Cortex-A53, 32-bit) | 8.5 s | 32.9 s | 37.7 s |
 
-The Pi 4 times were measured while the live receiver was also running on
-the same Pi, so both are probably slightly high. The Pi 3B times are for the
-first 20 s of the capture, times 3; on a Pi 3B the coherent build uses about
-63% of one core for demodulation (see
+The Pi 4 times were measured with `--no-demod2400x`, `--no-coherent` and the
+default, on two cores while the live receiver was also running on the same Pi,
+so they are probably slightly high. The Pi 3B times are for the first 20 s of
+the capture, times 3; on a Pi 3B the default uses about 63% of one core for
+demodulation (see
 [NOTES-demod2400x.md](NOTES-demod2400x.md#raspberry-pi-3b)). Live on the Pi 4 this is
 about 31% of one core. These results come from
 one receiver and a one-minute capture; longer side-by-side runs are in

@@ -72,6 +72,7 @@ RTL-SDR capture decoded on a Raspberry Pi 5 unless stated otherwise.
 | `decode_bits` starch kernel | Called 5 times per candidate, ~2M candidates a minute | 82 → 26 ns per call; demod 4.8 → 4.3 s |
 | Adaptive gain fed | It was not called at all by the new demodulator | Same gain decisions as stock |
 | Signal power capped at full scale | Clipped frames reported up to +1.1 dBFS | RSSI matches stock (mean +0.01 dB, σ 0.2 dB) |
+| Demodulate in 32768-sample pieces (`DEMOD_BLOCK`) | The 12 MHz data for a whole FIFO buffer is 1.3 MB; a piece's fits in L2 between upsample, preamble search and decodes. Done inside `demodulate2400x()`, as the drivers need the FIFO buffers to stay the size of their transfers | Output byte-identical; CPU −4.4% (RTL-SDR), −8.4% (SDRplay) on the Pi 5 |
 
 ### Overflow bound
 
@@ -100,6 +101,25 @@ Generic is the reference; NEON and AVX2 must match it exactly, which
   than it sharpens pulses; weak frames 1205 → 616 at `a = 0.1`.
 * **Lower `PEAMBLE_THRES`**: 50 → 40 gives +1.2% messages for +64% CPU;
   at 30, false aircraft appear.
+* **Smaller FIFO buffers** (32768 × 48 instead of 131072 × 12): same gain
+  as `DEMOD_BLOCK` with `--ifile`, but the RTL-SDR, HackRF, LimeSDR and
+  bladeRF drivers put each transfer (up to 131072 samples) into one buffer
+  and drop what doesn't fit, and the stock demodulator would change too.
+* **Upsampling only around detected preambles**: the 6-phase metric needs
+  the full 12 MHz data, and a 2.4 MHz four-pulse pre-test passes 42% of
+  positions (95% of 64-sample blocks); upsampling on demand for the decodes
+  alone is break-even.
+* **Other preamble metrics** (fewer candidates for the same messages, to
+  save CPU). Tested on a 60 s RTL-SDR and a 60 s SDRplay recording:
+  * Noise-floor bias in the denominator (25th percentile of the buffer):
+    +0.4% messages at a third fewer candidates on both, but needs a floor
+    estimate and tuning constants.
+  * Sum of the 4 pulses instead of the smallest, or the second smallest:
+    fewer messages at any threshold.
+  * Gap sum less its largest 1 or 2 chips (stray pulses from other replies
+    only add energy): up to +3.3% messages on the SDRplay, none on the
+    RTL-SDR, and the detector costs ~30% more. Fewer candidates save little
+    (~0.4 µs each), so no CPU gain without losing messages.
 * **Soft-decision bit flipping** (flip the weakest bits when the CRC fails):
   `--fix` already repairs any single bit, so this only helps 2-bit errors,
   at a false-decode risk. Not pursued.

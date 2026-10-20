@@ -92,6 +92,12 @@ static unsigned bitErrors(const uint8_t *a, const uint8_t *b, int bits)
 }
 #endif /* DEMOD_2400X_COHERENT */
 
+// New samples per pass. Each FIFO buffer (about 131k samples) is demodulated in
+// pieces this size, so the 12 MHz data (10 bytes per input sample) stays in the
+// L2 cache between the upsample, the preamble search and the decodes. Only this
+// demodulator: the FIFO, the SDR drivers and the stock demodulator are unchanged.
+#define DEMOD_BLOCK 32768
+
 // The metric index is this many 12 MHz samples (3 input samples, the FIR delay)
 // before the true start of the preamble
 #define UPSAMPLE_DELAY 15
@@ -618,13 +624,8 @@ static int powerShift(double mean_power)      // mean_power: fraction of 12-bit 
 //#define CHECK_USAMP
 //#define CHECK_POW
 // mag->data contains DC-removed signed 12-bit I/Q sample pairs (-2048..2047): [overlap | new samples]
-void demodulate2400x(struct mag_buf *mag)
+static void demodulateBlock(struct mag_buf *mag, struct staticdata_t *st)
 {
-   static struct staticdata_t stdata;
-
-   if (allocateBuffers(&stdata, mag->totalLength) < 0)
-       return;
-
    unsigned overlap = mag->overlap;
    unsigned dlen = mag->validLength;            // whole buffer, overlap included
    unsigned newlen = dlen - overlap;            // new samples in this buffer
@@ -632,23 +633,23 @@ void demodulate2400x(struct mag_buf *mag)
    assert(overlap >= OVERLAP_WINDOW);
 
    // No usable skip from the previous buffer
-   if (!stdata.prev_mlen || (mag->flags & MAGBUF_DISCONTINUOUS))
-       stdata.next_start = 0;
+   if (!st->prev_mlen || (mag->flags & MAGBUF_DISCONTINUOUS))
+       st->next_start = 0;
 
 #ifdef USE_MAGNITUDE
    int pshift = 0;                              // magnitude needs no gain shift
 #else
    int pshift = powerShift(mag->mean_power);
 #endif
-   stdata.prev_mlen = newlen;
+   st->prev_mlen = newlen;
 
    // Upsample the whole buffer
-   int ulen = starch_upsample12((const int16_t *) mag->data, (int) dlen, pshift, stdata.udata);
+   int ulen = starch_upsample12((const int16_t *) mag->data, (int) dlen, pshift, st->udata);
 
 #ifdef CHECK_POW
    int max = 0;
    for (int i = 0; i < 6 * NU_STRIDE(ulen); i++) {
-       int mm = stdata.udata[i];
+       int mm = st->udata[i];
        if (mm > max) max = mm;
    }
    fprintf(stderr, "pshift = %d, Max Power = %d\n", pshift, max);
@@ -658,42 +659,66 @@ void demodulate2400x(struct mag_buf *mag)
    for (int i = 0; i < ulen; i++) {
         int phase = i % 6;
         int pos   = i / 6;
-        fprintf(stderr, "%4d %u\n", i, stdata.udata[phase * stride + pos]);
+        fprintf(stderr, "%4d %u\n", i, st->udata[phase * stride + pos]);
    }
 #endif
 
    // Locate possible preambles
-   int mlen = starch_locate_preamble(stdata.udata, ulen, PEAMBLE_THRES, stdata.metric);   // metric < PEAMBLE_THRES is 0
+   int mlen = starch_locate_preamble(st->udata, ulen, PEAMBLE_THRES, st->metric);   // metric < PEAMBLE_THRES is 0
 #ifdef CHECK_METRIC
-   checkMetric(stdata.metric, mlen);
+   checkMetric(st->metric, mlen);
 #endif
 
    // Magnitudes for adaptive gain, on the stock scale
-   stdata.amag = NULL;
+   st->amag = NULL;
    if (Modes.adaptive_burst_control || Modes.adaptive_range_control) {
-       stdata.amag = stdata.abuf;
-       starch_magnitude_sc16q11((const sc16_t *) mag->data, stdata.amag, dlen);
-       if (stdata.adaptive_end > newlen || (mag->flags & MAGBUF_DISCONTINUOUS))
-           stdata.adaptive_end = 0;
+       st->amag = st->abuf;
+       starch_magnitude_sc16q11((const sc16_t *) mag->data, st->amag, dlen);
+       if (st->adaptive_end > newlen || (mag->flags & MAGBUF_DISCONTINUOUS))
+           st->adaptive_end = 0;
    }
 
    // Decode the frames this buffer owns
-   double signal_energy = searchFrames(mag, &stdata, mlen, ulen);
+   double signal_energy = searchFrames(mag, st, mlen, ulen);
 
    // Adaptive gain: the rest of the new samples; a frame running into the overlap
    // carries on into the next buffer, as demod_2400.c
-   if (stdata.amag) {
-       if (stdata.adaptive_end < newlen) {
-           adaptive_update(&stdata.amag[stdata.adaptive_end], newlen - stdata.adaptive_end, NULL);
-           stdata.adaptive_end = 0;
+   if (st->amag) {
+       if (st->adaptive_end < newlen) {
+           adaptive_update(&st->amag[st->adaptive_end], newlen - st->adaptive_end, NULL);
+           st->adaptive_end = 0;
        } else {
-           stdata.adaptive_end -= newlen;
+           st->adaptive_end -= newlen;
        }
    }
 
    // Noise power = everything in the new samples that wasn't a decoded frame
    Modes.stats_current.noise_power_sum += mag->mean_power * newlen - signal_energy;
    Modes.stats_current.noise_power_count += newlen;
+}
+
+void demodulate2400x(struct mag_buf *mag)
+{
+   static struct staticdata_t stdata;
+
+   const unsigned overlap = mag->overlap;
+   const unsigned newlen = mag->validLength - overlap;
+   if (allocateBuffers(&stdata, MIN(mag->totalLength, overlap + DEMOD_BLOCK)) < 0)
+       return;
+
+   // Each piece: the previous piece's last 'overlap' samples, then up to
+   // DEMOD_BLOCK new ones, just as if the FIFO buffers were that size
+   for (unsigned start = 0; start < newlen; start += DEMOD_BLOCK) {
+       struct mag_buf piece = *mag;
+       piece.data = magbuf_sample(mag, start);
+       piece.validLength = overlap + MIN(DEMOD_BLOCK, newlen - start);
+       piece.totalLength = MIN(mag->totalLength - start, overlap + DEMOD_BLOCK);
+       piece.sampleTimestamp = mag->sampleTimestamp + start * 12e6 / Modes.sample_rate;
+       piece.sysTimestamp = mag->sysTimestamp + receiveclock_ms_elapsed(mag->sampleTimestamp, piece.sampleTimestamp);
+       if (start)
+           piece.flags &= ~MAGBUF_DISCONTINUOUS;
+       demodulateBlock(&piece, &stdata);
+   }
 }
 
 #endif /* DEMOD_2400X */

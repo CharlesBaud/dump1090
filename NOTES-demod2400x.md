@@ -176,8 +176,6 @@ which then doesn't have the two options.
   `--no-coherent` to switch off). Upstream may prefer stock as the default.
 * The default version string is `11.2x`; upstream's is `unknown` (packages
   set it).
-* `wisdom.x86` is provisional and the AVX2 code has only run under QEMU, not
-  been timed on real x86 hardware.
 * `--dcfilter` is still not supported (as upstream), although the converters
   now remove DC anyway.
 * Mode A/C (`--modeac`) with DEMOD_2400X goes through `getMagnitude()`, which
@@ -239,5 +237,3 @@ linked a stub library (not committed).
   reusing the I/Q kept in the FIFO: done (`-DDEMOD_2400X_COHERENT`), see
   [COHERENT-demod2400x.md](COHERENT-demod2400x.md).
 * An early DF check before decoding the second half and scoring.
-* Real x86 timings for `wisdom.x86` (`decode_bits` and `coherent_decode`
-  orders are provisional).

@@ -239,7 +239,8 @@ implementations that give bit-identical results:
 | NEON, ARMv7 (Pi 5, 32-bit) | 2.44 µs | 1.12 µs |
 | NEON, aarch64 (Pi 4) | 3.40 µs | 1.53 µs |
 | NEON, ARMv7 (Pi 3B, 32-bit) | 11.8 µs | 5.5 µs |
-| AVX2 | checked under QEMU only, not yet timed | |
+| Generic C (x86-64) | 3.7 µs | 1.5 µs |
+| AVX2 (x86-64) | 1.06 µs | 0.48 µs |
 
 Most frames stop at the gate, so the cost is dominated by the first half:
 interpolating its 112 complex chips (about half the time), converting them to

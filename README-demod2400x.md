@@ -128,11 +128,13 @@ then `make test`):
 | gcc 14.2 (cross) | ARMv7 | 0 | `starch-benchmark -V` passes, run natively on AArch64 |
 | gcc 14.2 (cross) | x86-64 AVX2 | 0 | pass under qemu-x86_64 |
 | clang 19.1 (cross) | x86-64 AVX2 | 0 | pass under qemu-x86_64 (59 validations) |
+| gcc (native) | x86-64 AVX2 | 0 | `starch-benchmark -V` passes on real hardware |
 
 The gcc and clang AArch64 builds give byte-identical decoder output,
 timestamps included. On x86, clang with `-ffast-math` compiles every AVX2
 divide and square root to a reciprocal estimate (`vrcpps`/`vrsqrtps`), so the
 kernels correct the estimate in both directions to stay exact. QEMU computes
 these estimates exactly, so x86 correctness also needs a run on real
-hardware. The AVX2 kernels passed on an Intel CPU before the mirrored
-upsampler and `decode_bits` were added; those still need an Intel run.
+hardware. All the AVX2 kernels, including the mirrored upsampler,
+`decode_bits` and `coherent_decode`, pass `starch-benchmark -V` on real x86-64
+hardware.

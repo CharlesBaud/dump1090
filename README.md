@@ -20,7 +20,7 @@ many other Linux or Unix-like systems.
 
 This branch adds an alternative Mode S demodulator for 2.4 MHz SDR input
 (`demod_2400x.c`, enabled with `-DDEMOD_2400X -DUSE_MAGNITUDE` in the
-Makefile; the build reports version `11.1x`). It upsamples the I/Q to
+Makefile; the build reports version `11.2x`). It upsamples the I/Q to
 12 MHz with a polyphase filter, finds preambles at every 12 MHz position and
 refines the arrival time for MLAT. The heavy kernels are starch functions
 with generic, NEON and AVX2 versions, checked bit-identical by

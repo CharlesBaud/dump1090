@@ -121,6 +121,71 @@ Generic is the reference; NEON and AVX2 must match it exactly, which
 * Adaptive gain with `--ifile` needs a gain table; for testing, a fake R820T
   table was patched into a scratch copy of `sdr.c` (not committed).
 
+## For reviewers
+
+### Where to start
+
+* `demod_2400x.c`: the demodulator (buffer handling, peak search, scoring,
+  fine timing, signal level) and the hook for the coherent pass.
+* `dsp/impl/demod2400x.generic.c`: the plain C reference of every kernel.
+  The NEON and AVX2 files must give exactly the same results.
+* `demod_2400x_coherent.c/.h` and `dsp/helpers/demod2400x_coherent.h`: the
+  coherent pass, described in [COHERENT-demod2400x.md](COHERENT-demod2400x.md).
+
+### Changes to existing upstream files
+
+Everything is inside `#ifdef DEMOD_2400X` (or `DEMOD_2400X_COHERENT`) unless
+stated.
+
+| File | Change | Why |
+|---|---|---|
+| `Makefile` | Adds `-DDEMOD_2400X -DUSE_MAGNITUDE -DDEMOD_2400X_COHERENT`, the new objects, default version `11.2x` | Switches the new demodulator on |
+| `fifo.c/h` | Not under `#ifdef`: `fifo_create()` takes `dtype_iq`, and the buffers and overlap copy are twice as large when it is 1; `magbuf_sample()` addresses sample n (one value per sample without the define) | The FIFO carries interleaved I/Q instead of magnitudes, so the demodulator (and the coherent pass) can use the phase |
+| `sdr_*.c` | Not under `#ifdef`, one line each: write at `magbuf_sample(outbuf, overlap)` (the same address as before without the define) | Same, for every SDR driver and `--ifile` |
+| `convert.c` | Converters call the `iqdata_conv_*` kernels: 12-bit signed I/Q with DC removed; state allocated in `init_converter()` | DC is removed once, in the converter, so the FIFO holds clean I/Q |
+| `demod_2400.c` | `demodulate2400AC()` computes magnitudes from the I/Q first (`getMagnitude()`) | Mode A/C still uses the stock demodulator, which expects magnitudes |
+| `dump1090.c` | `fifo_create(..., 1, ...)` and `demodulate2400x()` in place of `demodulate2400()` | Selects the new demodulator |
+| `dump1090.h` | Includes `demod_2400x.h` | |
+| `stats.c/h`, `net_io.c` | Three coherent counters; `--stats` lines; `"coherent":{...}` in `stats.json` `local` | Live monitoring of the coherent pass. Consumers that ignore unknown fields are unaffected |
+| `dsp/starchgen.py` | Seven new starch functions | The kernels |
+| `wisdom.*` | Kernel order for the new functions | starch picks the fastest version |
+| `README.md` | A short section pointing at these documents | |
+
+Without the defines the build is the same as upstream: the no-define build was
+checked to give byte-identical output to stock on the 60 s capture.
+
+### Generated and derived files
+
+* `dsp/generated/*` is produced by `python3 dsp/starchgen.py .`; review
+  `dsp/starchgen.py` and `dsp/impl/*` instead.
+* `dsp/helpers/demod2400x_coeffs.h` (upsampler taps) comes from
+  `sim/ls_coeffs.py`; `dsp/helpers/demod2400x_coh_tables.h` (phasors) from
+  `sim/coh_tables.py`.
+
+### How to check it
+
+* `make test`: CPR tests, and `starch-benchmark -V`, which checks every
+  NEON and AVX2 kernel against generic (including worst-case input).
+* Decode a recording with stock and with this branch and compare (see
+  [Testing](#testing)); `--throttle` for positions and tracks.
+
+### Open points
+
+* DEMOD_2400X is switched on unconditionally in the Makefile. Upstream would
+  probably want it optional (a make variable), with stock as the default.
+* The default version string is `11.2x`; upstream's is `unknown` (packages
+  set it).
+* `wisdom.x86` is provisional and the AVX2 code has only run under QEMU, not
+  been timed on real x86 hardware.
+* `--dcfilter` is still not supported (as upstream), although the converters
+  now remove DC anyway.
+* Mode A/C (`--modeac`) with DEMOD_2400X goes through `getMagnitude()`, which
+  keeps a static buffer; it has had little testing.
+* Statics: `getMagnitude()`'s buffer, the coherent statistics and sample-dump
+  state in `demod_2400x.c`, and two diagnostic globals in
+  `demod_2400x_coherent.c`. All are used from the demodulator thread only.
+* The stock demodulator crashes on SDRplay RSP1B input; not addressed here.
+
 ## Raspberry Pi 3B
 
 A Pi 3 Model B (Rev 1.2, Cortex-A53 at 1.2 GHz) running Volumio, a 32-bit OS,

@@ -90,9 +90,11 @@ void display_stats(struct stats *st) {
         for (j = 1; j <= Modes.nfix_crc; ++j)
             printf("    %12u accepted with %d-bit error repaired\n", st->demod_accepted[j], j);
 #ifdef DEMOD_2400X_COHERENT
-        printf("  %12u coherent decodes tried\n",                      st->demod_coherent_tried);
-        printf("    %12u with a coherent carrier\n",                   st->demod_coherent_coherent);
-        printf("    %12u rescued (included in accepted above)\n",      st->demod_coherent_rescued);
+        if (Modes.demod_2400x && Modes.coherent) {
+            printf("  %12u coherent decodes tried\n",                      st->demod_coherent_tried);
+            printf("    %12u with a coherent carrier\n",                   st->demod_coherent_coherent);
+            printf("    %12u rescued (included in accepted above)\n",      st->demod_coherent_rescued);
+        }
 #endif
 
         if (st->noise_power_sum > 0 && st->noise_power_count > 0) {

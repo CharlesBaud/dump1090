@@ -414,7 +414,7 @@ static int emitFrame(const struct mag_buf *mag, const struct candidate *c,
     // Coherent second pass for frames the magnitude bits don't decode. Only worth
     // trying for candidates whose bits already look fairly clean (quality gate);
     // the kernel itself stops early when the carrier isn't coherent (rho2 gate).
-    if (score < SR_ACCEPT_THRESHOLD && c->quality >= COHERENT_GATE) {
+    if (Modes.coherent && score < SR_ACCEPT_THRESHOLD && c->quality >= COHERENT_GATE) {
         static int registered;
         if (!registered) {
             registered = 1;

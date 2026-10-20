@@ -113,6 +113,12 @@ static void modesInitConfig(void) {
     Modes.gain                    = MODES_DEFAULT_GAIN;
     Modes.freq                    = MODES_DEFAULT_FREQ;
     Modes.fix_df                  = 1;
+#ifdef DEMOD_2400X
+    Modes.demod_2400x             = 1;
+#endif
+#ifdef DEMOD_2400X_COHERENT
+    Modes.coherent                = 1;
+#endif
     Modes.interactive_display_ttl = MODES_INTERACTIVE_DISPLAY_TTL;
     // Default TTL is 60s; width must match so the Ti column pads correctly for values >= 10
     Modes.interactive_display_size = 2;
@@ -166,11 +172,8 @@ static void modesInit(void) {
         exit(1);
     }
 
-#ifdef DEMOD_2400X
-    if (!fifo_create(MODES_MAG_BUFFERS, MODES_MAG_BUF_SAMPLES + Modes.trailing_samples, 1, Modes.trailing_samples)) {
-#else
-    if (!fifo_create(MODES_MAG_BUFFERS, MODES_MAG_BUF_SAMPLES + Modes.trailing_samples, 0, Modes.trailing_samples)) {
-#endif
+    // The DEMOD_2400X demodulator takes I/Q samples, the stock one magnitudes
+    if (!fifo_create(MODES_MAG_BUFFERS, MODES_MAG_BUF_SAMPLES + Modes.trailing_samples, Modes.demod_2400x ? 1 : 0, Modes.trailing_samples)) {
         fprintf(stderr, "Out of memory allocating FIFO\n");
         exit(1);
     }
@@ -354,6 +357,12 @@ static void showHelp(void)
 "--no-fix-df              Disable error correction of the DF message field\n"
 "                          (reduces CPU requirements)\n"
 "--enable-df24            Enable decoding of DF24 Comm-D ELM messages\n"
+#ifdef DEMOD_2400X
+"--no-demod2400x          Use the stock demodulator instead of DEMOD_2400X\n"
+#endif
+#ifdef DEMOD_2400X_COHERENT
+"--no-coherent            Disable the DEMOD_2400X coherent second pass\n"
+#endif
 "--lat <latitude>         Reference/receiver latitude for surface positions\n"
 "--lon <longitude>        Reference/receiver longitude for surface positions\n"
 "--max-range <distance>   Absolute maximum range for position decoding (in NM)\n"
@@ -637,6 +646,14 @@ int main(int argc, char **argv) {
             Modes.nfix_crc = 0;
         } else if (!strcmp(argv[j],"--no-fix-df")) {
             Modes.fix_df = 0;
+#ifdef DEMOD_2400X
+        } else if (!strcmp(argv[j],"--no-demod2400x")) {
+            Modes.demod_2400x = 0;
+#endif
+#ifdef DEMOD_2400X_COHERENT
+        } else if (!strcmp(argv[j],"--no-coherent")) {
+            Modes.coherent = 0;
+#endif
         } else if (!strcmp(argv[j],"--no-crc-check")) {
             fprintf(stderr, "warning: --no-crc-check no longer supported, option ignored (please raise an issue on github if you have a usecase that needs this)\n");
         } else if (!strcmp(argv[j],"--phase-enhance")) {
@@ -906,10 +923,11 @@ int main(int argc, char **argv) {
 
                 start_cpu_timing(&start_time);
 #ifdef DEMOD_2400X
-                demodulate2400x(buf);
-#else
-                demodulate2400(buf);
+                if (Modes.demod_2400x)
+                    demodulate2400x(buf);
+                else
 #endif
+                    demodulate2400(buf);
                 if (Modes.mode_ac) {
                     demodulate2400AC(buf);
                 }

@@ -354,6 +354,8 @@ struct _Modes {                             // Internal state
     int   enable_df24;               // Enable decoding of DF24..DF31 (Comm-D ELM)
     int   raw;                       // Raw output format
     int   mode_ac;                   // Enable decoding of SSR Modes A & C
+    int   demod_2400x;               // DEMOD_2400X build: use the DEMOD_2400X demodulator (else the stock one)
+    int   coherent;                  // DEMOD_2400X_COHERENT build: run the coherent second pass
     int   mode_ac_auto;              // allow toggling of A/C by Beast commands
     int   net;                       // Enable networking
     int   net_only;                  // Enable just networking

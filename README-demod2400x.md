@@ -3,9 +3,16 @@
 This branch (`demod-2400x-dev`, based on upstream `dev`) adds a new Mode S
 demodulator for 2.4 MHz SDR input (`demod_2400x.c`, enabled with
 `-DDEMOD_2400X -DUSE_MAGNITUDE` in the Makefile; the build reports version
-`11.2x` unless `DUMP1090_VERSION` is set). An optional
-coherent second pass (`-DDEMOD_2400X_COHERENT`) rescues frames that fail the
-CRC; see [COHERENT-demod2400x.md](COHERENT-demod2400x.md). In outline:
+`11.2x` unless `DUMP1090_VERSION` is set). A coherent second pass
+(`-DDEMOD_2400X_COHERENT`) rescues frames that fail the CRC; see
+[COHERENT-demod2400x.md](COHERENT-demod2400x.md). Both are on by default and can
+be switched off when running:
+
+* `--no-demod2400x`: the stock demodulator, exactly as upstream (stock
+  converters, magnitudes in the FIFO; output byte-identical to upstream `dev`);
+* `--no-coherent`: DEMOD_2400X without the coherent pass.
+
+In outline:
 
 * DC removal and conversion to 12-bit I/Q in the input converter, so the
   FIFO keeps I/Q samples for later processing.

@@ -1910,8 +1910,9 @@ static char * appendStatsJson(char *p,
 
         p = safe_snprintf(p, end, "]");
 #ifdef DEMOD_2400X_COHERENT
-        p = safe_snprintf(p, end, ",\"coherent\":{\"tried\":%u,\"coherent\":%u,\"rescued\":%u}",
-                          st->demod_coherent_tried, st->demod_coherent_coherent, st->demod_coherent_rescued);
+        if (Modes.demod_2400x && Modes.coherent)
+            p = safe_snprintf(p, end, ",\"coherent\":{\"tried\":%u,\"coherent\":%u,\"rescued\":%u}",
+                              st->demod_coherent_tried, st->demod_coherent_coherent, st->demod_coherent_rescued);
 #endif
 
         if (st->signal_power_sum > 0 && st->signal_power_count > 0)

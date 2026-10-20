@@ -139,20 +139,21 @@ stated.
 
 | File | Change | Why |
 |---|---|---|
-| `Makefile` | Adds `-DDEMOD_2400X -DUSE_MAGNITUDE -DDEMOD_2400X_COHERENT`, the new objects, default version `11.2x` | Switches the new demodulator on |
-| `fifo.c/h` | Not under `#ifdef`: `fifo_create()` takes `dtype_iq`, and the buffers and overlap copy are twice as large when it is 1; `magbuf_sample()` addresses sample n (one value per sample without the define) | The FIFO carries interleaved I/Q instead of magnitudes, so the demodulator (and the coherent pass) can use the phase |
-| `sdr_*.c` | Not under `#ifdef`, one line each: write at `magbuf_sample(outbuf, overlap)` (the same address as before without the define) | Same, for every SDR driver and `--ifile` |
-| `convert.c` | Converters call the `iqdata_conv_*` kernels: 12-bit signed I/Q with DC removed; state allocated in `init_converter()` | DC is removed once, in the converter, so the FIFO holds clean I/Q |
-| `demod_2400.c` | `demodulate2400AC()` computes magnitudes from the I/Q first (`getMagnitude()`) | Mode A/C still uses the stock demodulator, which expects magnitudes |
-| `dump1090.c` | `fifo_create(..., 1, ...)` and `demodulate2400x()` in place of `demodulate2400()` | Selects the new demodulator |
-| `dump1090.h` | Includes `demod_2400x.h` | |
-| `stats.c/h`, `net_io.c` | Three coherent counters; `--stats` lines; `"coherent":{...}` in `stats.json` `local` | Live monitoring of the coherent pass. Consumers that ignore unknown fields are unaffected |
+| `Makefile` | Adds `-DDEMOD_2400X -DUSE_MAGNITUDE -DDEMOD_2400X_COHERENT`, the new objects, default version `11.2x` | Builds the new demodulator in |
+| `dump1090.c` | Options `--no-demod2400x` and `--no-coherent` (both on by default); `fifo_create()` with I/Q or magnitudes; `demodulate2400x()` or `demodulate2400()` | Chooses the demodulator when running |
+| `dump1090.h` | `Modes.demod_2400x`, `Modes.coherent`; includes `demod_2400x.h` | |
+| `fifo.c/h` | Not under `#ifdef`: `fifo_create()` takes `dtype_iq`, and the buffers and overlap copy are twice as large when it is 1; `magbuf_sample()` addresses sample n (`fifo_values_per_sample` is 1 for magnitudes, as before) | The FIFO carries interleaved I/Q for DEMOD_2400X, so it (and the coherent pass) can use the phase |
+| `sdr_*.c` | Not under `#ifdef`, one line each: write at `magbuf_sample(outbuf, overlap)` (the same address as before with magnitudes) | Same, for every SDR driver and `--ifile` |
+| `convert.c` | I/Q converters (`convert_iq_*`, calling the `iqdata_conv_*` kernels: 12-bit signed I/Q with DC removed) beside the stock ones; `init_converter()` picks by `Modes.demod_2400x` | DC is removed once, in the converter, so the FIFO holds clean I/Q |
+| `demod_2400.c` | `demodulate2400AC()` computes magnitudes from the I/Q first (`getMagnitude()`) when the FIFO holds I/Q | Mode A/C still uses the stock demodulator, which expects magnitudes |
+| `stats.c/h`, `net_io.c` | Three coherent counters; `--stats` lines and `"coherent":{...}` in `stats.json` `local`, only while the coherent pass runs | Live monitoring of the coherent pass. Consumers that ignore unknown fields are unaffected |
 | `dsp/starchgen.py` | Seven new starch functions | The kernels |
 | `wisdom.*` | Kernel order for the new functions | starch picks the fastest version |
 | `README.md` | A short section pointing at these documents | |
 
-Without the defines the build is the same as upstream: the no-define build was
-checked to give byte-identical output to stock on the 60 s capture.
+`--no-demod2400x` gives byte-identical output to upstream `dev`'s stock build on
+the 60 s capture (checked with `--raw`), and so does a build without the defines,
+which then doesn't have the two options.
 
 ### Generated and derived files
 
@@ -171,8 +172,8 @@ checked to give byte-identical output to stock on the 60 s capture.
 
 ### Open points
 
-* DEMOD_2400X is switched on unconditionally in the Makefile. Upstream would
-  probably want it optional (a make variable), with stock as the default.
+* DEMOD_2400X and the coherent pass are on by default (`--no-demod2400x`,
+  `--no-coherent` to switch off). Upstream may prefer stock as the default.
 * The default version string is `11.2x`; upstream's is `unknown` (packages
   set it).
 * `wisdom.x86` is provisional and the AVX2 code has only run under QEMU, not

@@ -570,11 +570,10 @@ static uint16_t *getMagnitude(struct mag_buf *mag)
 void demodulate2400AC(struct mag_buf *mag)
 {
     struct modesMessage mm;
-#ifdef DEMOD_2400X
-    uint16_t *m;
-    if ((m = getMagnitude(mag)) == NULL) return;
-#else
     uint16_t *m = mag->data;
+#ifdef DEMOD_2400X
+    // The FIFO holds I/Q for the DEMOD_2400X demodulator
+    if (Modes.demod_2400x && (m = getMagnitude(mag)) == NULL) return;
 #endif
     uint32_t mlen = mag->validLength - mag->overlap;
     unsigned f1_sample;

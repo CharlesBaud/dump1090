@@ -68,17 +68,14 @@ struct mag_buf {
     struct mag_buf *next;            // linked list forward link
 };
 
-// Values stored per sample in mag_buf.data: one magnitude, or interleaved I,Q in the DEMOD_2400X build
-#ifdef DEMOD_2400X
-#define MAGBUF_VALUES_PER_SAMPLE 2
-#else
-#define MAGBUF_VALUES_PER_SAMPLE 1
-#endif
+// Values stored per sample in mag_buf.data: 1 (magnitudes) or 2 (interleaved I,Q),
+// as chosen by fifo_create()
+extern unsigned fifo_values_per_sample;
 
 // Address of sample n in a buffer (n counts samples, not uint16_t values)
 static inline uint16_t *magbuf_sample(struct mag_buf *buf, unsigned n)
 {
-    return &buf->data[n * MAGBUF_VALUES_PER_SAMPLE];
+    return &buf->data[n * fifo_values_per_sample];
 }
 
 // Create the queue structures. Not threadsafe. Returns true on success.

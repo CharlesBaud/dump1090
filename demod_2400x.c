@@ -103,10 +103,12 @@ static unsigned bitErrors(const uint8_t *a, const uint8_t *b, int bits)
 #define UPSAMPLE_DELAY 15
 
 #ifdef USE_MAGNITUDE
-#define PEAMBLE_THRES 50
+#ifndef PEAMBLE_THRES
+#define PEAMBLE_THRES 28      // 256 * minp / (minp + gap + 1)
+#endif
 #define DATA_THRES    65
 #else
-#define PEAMBLE_THRES 80
+#define PEAMBLE_THRES 47
 #define DATA_THRES    150
 #endif
 #define DATA2_THRES   ((4*DATA_THRES)/5)

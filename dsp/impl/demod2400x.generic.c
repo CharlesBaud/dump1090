@@ -156,8 +156,8 @@ int STARCH_IMPL(locate_preamble, generic) (const uint16_t * restrict pp, int nt,
                 p[14] +
                 p[15];
 
-            uint32_t n = 256 * PREAMBLE_KK * minp;
-            uint32_t d = PREAMBLE_KK * minp + gap + 1;
+            uint32_t n = 256 * minp;
+            uint32_t d = minp + gap + 1;
             *mp = n < thres * d ? 0 : n / d;           // below threshold: 0, no divide
 
             p++;

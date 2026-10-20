@@ -354,8 +354,8 @@ uint8_t preamble_metric1(const uint16_t * restrict p, unsigned thres)
     uint32_t gap = p[1] + p[3] + p[4] + p[5] + p[6] + p[8] +
                    p[10] + p[11] + p[12] + p[13] + p[14] + p[15];
 
-    uint32_t n = 256 * PREAMBLE_KK * minp;
-    uint32_t d = PREAMBLE_KK * minp + gap + 1;
+    uint32_t n = 256 * minp;
+    uint32_t d = minp + gap + 1;
     return n < thres * d ? 0 : n / d;
 }
 
@@ -402,14 +402,14 @@ void preamble_metric_block_neon(const uint16_t * restrict p, int n8, unsigned th
         gap_hi = vaddq_u32(vaddq_u32(gap_hi, one), vaddq_u32(s4a.val[1], s4b.val[1]));
         s4a = s4b;
 
-        // Metric = n / d = (256 * KK * minp) / (KK * minp + gap + 1), or 0 if below thres
+        // Metric = n / d = (256 * minp) / (minp + gap + 1), or 0 if below thres
 #ifdef PREAMBLE_MIN_PULSE
         const uint16x8_t m = vminq_u16(vminq_u16(vld1q_u16(p + 0), vld1q_u16(p + 2)),
                                        vminq_u16(vld1q_u16(p + 7), vld1q_u16(p + 9)));
-        const uint32x4_t n_lo = vmull_n_u16(vget_low_u16(m), 256 * PREAMBLE_KK);
-        const uint32x4_t n_hi = vmull_n_u16(vget_high_u16(m), 256 * PREAMBLE_KK);
-        const uint32x4_t d_lo = vmlal_n_u16(gap_lo, vget_low_u16(m), PREAMBLE_KK);
-        const uint32x4_t d_hi = vmlal_n_u16(gap_hi, vget_high_u16(m), PREAMBLE_KK);
+        const uint32x4_t n_lo = vshll_n_u16(vget_low_u16(m), 8);
+        const uint32x4_t n_hi = vshll_n_u16(vget_high_u16(m), 8);
+        const uint32x4_t d_lo = vaddw_u16(gap_lo, vget_low_u16(m));
+        const uint32x4_t d_hi = vaddw_u16(gap_hi, vget_high_u16(m));
 #endif
 #ifdef PREAMBLE_SUM_PULSE
         const uint16x8_t v0 = vld1q_u16(p + 0), v2 = vld1q_u16(p + 2);
@@ -418,10 +418,10 @@ void preamble_metric_block_neon(const uint16_t * restrict p, int n8, unsigned th
                                           vaddl_u16(vget_low_u16(v7), vget_low_u16(v9)));
         const uint32x4_t m_hi = vaddq_u32(vaddl_u16(vget_high_u16(v0), vget_high_u16(v2)),
                                           vaddl_u16(vget_high_u16(v7), vget_high_u16(v9)));
-        const uint32x4_t n_lo = vmulq_n_u32(m_lo, 256 * PREAMBLE_KK);
-        const uint32x4_t n_hi = vmulq_n_u32(m_hi, 256 * PREAMBLE_KK);
-        const uint32x4_t d_lo = vmlaq_n_u32(gap_lo, m_lo, PREAMBLE_KK);
-        const uint32x4_t d_hi = vmlaq_n_u32(gap_hi, m_hi, PREAMBLE_KK);
+        const uint32x4_t n_lo = vshlq_n_u32(m_lo, 8);
+        const uint32x4_t n_hi = vshlq_n_u32(m_hi, 8);
+        const uint32x4_t d_lo = vaddq_u32(gap_lo, m_lo);
+        const uint32x4_t d_hi = vaddq_u32(gap_hi, m_hi);
 #endif
 
         // Most positions are noise below the threshold: skip the divide when all 8 are

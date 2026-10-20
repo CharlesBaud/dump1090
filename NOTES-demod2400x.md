@@ -35,9 +35,9 @@ RTL-SDR capture decoded on a Raspberry Pi 5 unless stated otherwise.
    integer magnitude, `floor(sqrt(I² + Q²))`. Output is stored as 6 rows, one
    per 12 MHz tick within a 0.5 µs chip.
 3. **Preamble search** (`locate_preamble`). The metric
-   `512·minp / (2·minp + gap + 1)` at every 12 MHz position, from the
+   `256·minp / (minp + gap + 1)` at every 12 MHz position, from the
    smallest of the 4 preamble pulses and the sum of the 12 gaps. Below
-   `PEAMBLE_THRES` it is set to 0 without dividing, which skips most noise.
+   `PEAMBLE_THRES` (28) it is set to 0 without dividing, which skips most noise.
 4. **Candidates** (`demod_2400x.c`). Peaks are scanned 8 metric bytes at a
    time (a SWAR test against the threshold). For each peak, the first 56 bits
    are decoded at the peak and its two neighbours, and the best quality wins
@@ -72,6 +72,7 @@ RTL-SDR capture decoded on a Raspberry Pi 5 unless stated otherwise.
 | `decode_bits` starch kernel | Called 5 times per candidate, ~2M candidates a minute | 82 → 26 ns per call; demod 4.8 → 4.3 s |
 | Adaptive gain fed | It was not called at all by the new demodulator | Same gain decisions as stock |
 | Signal power capped at full scale | Clipped frames reported up to +1.1 dBFS | RSSI matches stock (mean +0.01 dB, σ 0.2 dB) |
+| Preamble metric without the factor 2 on `minp` (`PREAMBLE_KK`), `PEAMBLE_THRES` 50 → 28 | Both test the same ratio `minp / (gap + 1)`, so only the threshold changes (50 ≙ 27.7); one multiply less | Candidates −7% (RTL-SDR), −9% (SDRplay); messages −0.1%, +0.07%, same aircraft; CPU −2.9%, −3.1% on the Pi 5. Threshold 24 gave the SDRplay a 26th aircraft |
 | Upsampler square root within ±1 (no exact fix-ups) | Only the benchmark needed exact magnitudes | `upsample12` −10.7% on the Pi 3B (ARMv7), −6% on the Pi 5; CPU −2.8% (RTL-SDR), −3.0% (SDRplay) on the Pi 5; same aircraft and positions, messages ±1 |
 | Demodulate in 32768-sample pieces (`DEMOD_BLOCK`) | The 12 MHz data for a whole FIFO buffer is 1.3 MB; a piece's fits in L2 between upsample, preamble search and decodes. Done inside `demodulate2400x()`, as the drivers need the FIFO buffers to stay the size of their transfers | Output byte-identical; CPU −4.4% (RTL-SDR), −8.4% (SDRplay) on the Pi 5 |
 
@@ -113,7 +114,7 @@ exception:
   gate cheap enough to help misses frames.
 * **Sharpened upsampler** (`coeffs.py` parameter `a`): amplifies noise more
   than it sharpens pulses; weak frames 1205 → 616 at `a = 0.1`.
-* **Lower `PEAMBLE_THRES`**: 50 → 40 gives +1.2% messages for +64% CPU;
+* **Lower `PEAMBLE_THRES`** (old scale, with the factor 2): 50 → 40 gives +1.2% messages for +64% CPU;
   at 30, false aircraft appear.
 * **Smaller FIFO buffers** (32768 × 48 instead of 131072 × 12): same gain
   as `DEMOD_BLOCK` with `--ifile`, but the RTL-SDR, HackRF, LimeSDR and

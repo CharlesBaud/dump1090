@@ -32,8 +32,8 @@
 // 256 * sum |p[2k] - p[2k+1]| / (sum (p[2k] + p[2k+1]) + 1). nbytes <= 2048.
 #define DECODE_BITS_MAX_BYTES 2048
 
-#define PREAMBLE_KK 2
-
+// Preamble metric: 256 * minp / (minp + gap + 1), minp the smallest of the 4 pulses
+// and gap the sum of the 12 gaps (< 256, so it fits a byte).
 // locate_preamble() sets metrics below its 'thres' argument to 0. That is exact
 // without dividing (floor(n / d) >= t <=> n >= t * d), and the peak search can't
 // tell the difference as long as thres <= its own threshold.

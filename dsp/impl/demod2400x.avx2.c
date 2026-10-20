@@ -286,8 +286,8 @@ uint8_t preamble_metric1(const uint16_t * restrict p, unsigned thres)
     uint32_t gap = p[1] + p[3] + p[4] + p[5] + p[6] + p[8] +
                    p[10] + p[11] + p[12] + p[13] + p[14] + p[15];
 
-    uint32_t n = 256 * PREAMBLE_KK * minp;
-    uint32_t d = PREAMBLE_KK * minp + gap + 1;
+    uint32_t n = 256 * minp;
+    uint32_t d = minp + gap + 1;
     return n < thres * d ? 0 : n / d;
 }
 
@@ -329,7 +329,7 @@ void preamble_metric_block_avx2(const uint16_t * restrict p, int n8, unsigned th
         gap = _mm256_add_epi32(_mm256_add_epi32(gap, one), _mm256_add_epi32(s4a, s4b));
         s4a = s4b;
 
-        // Metric = (256 * KK * minp) / (KK * minp + gap + 1)
+        // Metric = (256 * minp) / (minp + gap + 1)
 #ifdef PREAMBLE_MIN_PULSE
         const __m128i m16 = _mm_min_epu16(_mm_min_epu16(_mm_loadu_si128((const __m128i *) (p + 0)),
                                                         _mm_loadu_si128((const __m128i *) (p + 2))),
@@ -341,8 +341,8 @@ void preamble_metric_block_avx2(const uint16_t * restrict p, int n8, unsigned th
         const __m256i minp = _mm256_add_epi32(_mm256_add_epi32(load_u16x8_u32_avx2(p + 0), load_u16x8_u32_avx2(p + 2)),
                                               _mm256_add_epi32(load_u16x8_u32_avx2(p + 7), load_u16x8_u32_avx2(p + 9)));
 #endif
-        const __m256i n = _mm256_mullo_epi32(minp, _mm256_set1_epi32(256 * PREAMBLE_KK));
-        const __m256i d = _mm256_add_epi32(gap, _mm256_mullo_epi32(minp, _mm256_set1_epi32(PREAMBLE_KK)));
+        const __m256i n = _mm256_slli_epi32(minp, 8);
+        const __m256i d = _mm256_add_epi32(gap, minp);
 
         // Most positions are noise below the threshold: skip the divide when all 8 are
         // (values < 2^31, so the signed compare is fine)

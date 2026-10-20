@@ -18,7 +18,7 @@
 // 2. Carrier sample of each bit: x_a if |x_a|^2 >= |x_b|^2 (int32), else x_b (one pulse
 //    per bit, in the larger chip unless noise wins). 7 block sums of 8 (one per byte),
 //    normalised below 2^COH_BLOCK_BITS.
-// 3. Coarse search: for each of 33 bins, sum over blocks (in block order) of
+// 3. Coarse search: for each of 32 bins (4 kHz apart, none at 0 Hz), sum over blocks (in block order) of
 //    rot(block, coh_bin[block][bin]) in int16; power re^2 + im^2 (int32); the first
 //    largest bin wins; parabola to 1/8 of a bin (coh_fine_index).
 // 4. Phasors P[i] = e^{-j 2 w i} per bit: P[0] = 32767, P[i] = rot(P[i-1], rb) for

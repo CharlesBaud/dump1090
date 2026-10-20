@@ -46,7 +46,7 @@ int coherentDecode(const int16_t *iq, unsigned iq_len, int pos,
     *rho2b = info[COH_INFO_RHO2B];
     *q1 = info[COH_INFO_Q1];
     *q2 = info[COH_INFO_Q2];
-    coh_last_freq_hz = (float) ((-62500.0 + 125000.0 * info[COH_INFO_FINE] / (COH_FINE_BINS - 1)));
+    coh_last_freq_hz = (float) (COH_BIN_HZ * ((double) info[COH_INFO_FINE] / COH_FINE - (COH_BINS - 1) / 2.0));
     coh_last_amp = 0;
     return 0;
 }

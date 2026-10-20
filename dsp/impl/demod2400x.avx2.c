@@ -613,11 +613,11 @@ void coh_chip_avx2(const int16_t *iq, int t, const __m256i *ci, const __m256i *c
     *im = _mm_extract_epi32(h2, 1);
 }
 
-// Chips of bits first .. first+n-1 as int32 a/b, I/Q
-static void coh_chips32_avx2(const int16_t *iq, int pos, int first, int n, const __m256i *ci, const __m256i *cq,
+// Chips of bits 0 .. n-1 as int32 a/b, I/Q
+static void coh_chips32_avx2(const int16_t *iq, int pos, int n, const __m256i *ci, const __m256i *cq,
                              int32_t *ar, int32_t *ai, int32_t *br, int32_t *bi)
 {
-    for (int i = first; i < first + n; i++) {
+    for (int i = 0; i < n; i++) {
         coh_chip_avx2(iq, pos + COH_DATA_OFFSET + 12 * i, ci, cq, &ar[i], &ai[i]);
         coh_chip_avx2(iq, pos + COH_DATA_OFFSET + 12 * i + 6, ci, cq, &br[i], &bi[i]);
     }
@@ -632,30 +632,18 @@ static inline __attribute__((always_inline)) __m128i coh_to16_avx2(const int32_t
     return _mm_packs_epi32(_mm256_castsi256_si128(x), _mm256_extracti128_si256(x, 1));
 }
 
-void STARCH_IMPL(coherent_decode, avx2) (const int16_t * restrict iq, int pos, unsigned thres,
-                                         uint8_t * restrict out, uint32_t * restrict info)
+// One half of the frame, bits first .. first+55, on its own (as coh_half_generic)
+static int coh_half_avx2(const int16_t *iq, int pos, int first, unsigned thres, const __m256i *ci, const __m256i *cq,
+                         uint8_t *out, uint32_t *rho2_out, uint32_t *f_out, uint32_t *q)
 {
-    int32_t a32r[COH_BITS], a32i[COH_BITS], b32r[COH_BITS], b32i[COH_BITS];
-    int16_t ar[COH_BITS], ai[COH_BITS], br[COH_BITS], bi[COH_BITS];
-    int16_t Pr[COH_BITS], Pi[COH_BITS], Qr[COH_BITS], Qi[COH_BITS];
-    __m256i ci[5], cq[5];
-    for (int c = 0; c < 5; c++) {
-        int16_t vi[16], vq[16];
-        for (int j = 0; j < 8; j++) {
-            vi[2 * j] = upsample_coeffs[c][j]; vi[2 * j + 1] = 0;
-            vq[2 * j] = 0; vq[2 * j + 1] = upsample_coeffs[c][j];
-        }
-        ci[c] = _mm256_loadu_si256((const __m256i *) vi);
-        cq[c] = _mm256_loadu_si256((const __m256i *) vq);
-    }
+    int32_t a32r[COH_HALF], a32i[COH_HALF], b32r[COH_HALF], b32i[COH_HALF];
+    int16_t ar[COH_HALF], ai[COH_HALF], br[COH_HALF], bi[COH_HALF];
+    int16_t Pr[COH_HALF], Pi[COH_HALF], Qr[COH_HALF], Qi[COH_HALF];
 
-    memset(out, 0, 14);
-    memset(info, 0, COH_INFO_N * sizeof(*info));
-
-    // Stage 1 chips and their shift
-    coh_chips32_avx2(iq, pos, 0, COH_EST_BITS, ci, cq, a32r, a32i, b32r, b32i);
+    // Chips and their shift
+    coh_chips32_avx2(iq, pos + 12 * first, COH_HALF, ci, cq, a32r, a32i, b32r, b32i);
     __m256i mx = _mm256_setzero_si256();
-    for (int i = 0; i < COH_EST_BITS; i += 8) {
+    for (int i = 0; i < COH_HALF; i += 8) {
         mx = _mm256_max_epu32(mx, _mm256_abs_epi32(_mm256_loadu_si256((const __m256i *) (a32r + i))));
         mx = _mm256_max_epu32(mx, _mm256_abs_epi32(_mm256_loadu_si256((const __m256i *) (a32i + i))));
         mx = _mm256_max_epu32(mx, _mm256_abs_epi32(_mm256_loadu_si256((const __m256i *) (b32r + i))));
@@ -665,7 +653,7 @@ void STARCH_IMPL(coherent_decode, avx2) (const int16_t * restrict iq, int pos, u
     m4 = _mm_max_epu32(m4, _mm_shuffle_epi32(m4, _MM_SHUFFLE(1, 0, 3, 2)));
     m4 = _mm_max_epu32(m4, _mm_shuffle_epi32(m4, _MM_SHUFFLE(2, 3, 0, 1)));
     const int cs = coh_shift((uint32_t) _mm_cvtsi128_si32(m4), COH_CHIP_BITS);
-    for (int i = 0; i < COH_EST_BITS; i += 8) {
+    for (int i = 0; i < COH_HALF; i += 8) {
         _mm_storeu_si128((__m128i *) (ar + i), coh_to16_avx2(a32r + i, cs));
         _mm_storeu_si128((__m128i *) (ai + i), coh_to16_avx2(a32i + i, cs));
         _mm_storeu_si128((__m128i *) (br + i), coh_to16_avx2(b32r + i, cs));
@@ -720,28 +708,26 @@ void STARCH_IMPL(coherent_decode, avx2) (const int16_t * restrict iq, int pos, u
     }
     const int16_t r8r = (int16_t) (coh_mulq15(Pr[7], rbr) - coh_mulq15(Pi[7], rbi));
     const int16_t r8i = (int16_t) (coh_mulq15(Pr[7], rbi) + coh_mulq15(Pi[7], rbr));
-    // P and Q for bits [from, to), 8 at a time (the second half only after the gate)
-#define COH_PHASORS(from, to)                                                                                   \
-    for (int i = (from); i < (to); i += 8) {                                                                    \
-        __m128i rr, ri;                                                                                         \
-        if (i >= 8) {                                                                                           \
-            coh_rot_sse(_mm_loadu_si128((const __m128i *) (Pr + i - 8)), _mm_loadu_si128((const __m128i *) (Pi + i - 8)), \
-                        _mm_set1_epi16(r8r), _mm_set1_epi16(r8i), &rr, &ri);                                    \
-            _mm_storeu_si128((__m128i *) (Pr + i), rr);                                                         \
-            _mm_storeu_si128((__m128i *) (Pi + i), ri);                                                         \
-        }                                                                                                       \
-        coh_rot_sse(_mm_loadu_si128((const __m128i *) (Pr + i)), _mm_loadu_si128((const __m128i *) (Pi + i)),   \
-                    _mm_set1_epi16(rcr), _mm_set1_epi16(rci), &rr, &ri);                                        \
-        _mm_storeu_si128((__m128i *) (Qr + i), rr);                                                             \
-        _mm_storeu_si128((__m128i *) (Qi + i), ri);                                                             \
+    // P and Q, 8 at a time
+    for (int i = 0; i < COH_HALF; i += 8) {
+        __m128i rr, ri;
+        if (i >= 8) {
+            coh_rot_sse(_mm_loadu_si128((const __m128i *) (Pr + i - 8)), _mm_loadu_si128((const __m128i *) (Pi + i - 8)),
+                        _mm_set1_epi16(r8r), _mm_set1_epi16(r8i), &rr, &ri);
+            _mm_storeu_si128((__m128i *) (Pr + i), rr);
+            _mm_storeu_si128((__m128i *) (Pi + i), ri);
+        }
+        coh_rot_sse(_mm_loadu_si128((const __m128i *) (Pr + i)), _mm_loadu_si128((const __m128i *) (Pi + i)),
+                    _mm_set1_epi16(rcr), _mm_set1_epi16(rci), &rr, &ri);
+        _mm_storeu_si128((__m128i *) (Qr + i), rr);
+        _mm_storeu_si128((__m128i *) (Qi + i), ri);
     }
-    COH_PHASORS(0, COH_EST_BITS)
 
 #define COH_LD(p) _mm_loadu_si128((const __m128i *) (p))
-    // Correlation over the first 56 bits
+    // Correlation
     const __m128i ones = _mm_set1_epi16(1);
     __m128i hre = _mm_setzero_si128(), him = _mm_setzero_si128(), e2v = _mm_setzero_si128();
-    for (int i = 0; i < COH_EST_BITS; i += 8) {
+    for (int i = 0; i < COH_HALF; i += 8) {
         // rot(a, P) or rot(b, Q): select the chip and its phasor, then rotate once
         const __m128i k = pick_b[i / 8];
         __m128i cre, cim;
@@ -755,40 +741,54 @@ void STARCH_IMPL(coherent_decode, avx2) (const int16_t * restrict iq, int pos, u
     }
     const int32_t h_re = coh_hsum_epi32_128(hre), h_im = coh_hsum_epi32_128(him);
     const uint32_t rho2 = coh_rho2(h_re, h_im, (uint32_t) coh_hsum_epi32_128(e2v));
-    info[COH_INFO_RHO2] = rho2;
-    info[COH_INFO_FINE] = (uint32_t) f;
+    *rho2_out = rho2;
+    *f_out = (uint32_t) f;
     if (rho2 < thres)
-        return;
+        return 0;
 
-    // Stage 2 chips, then slice all 112 bits, one byte per vector
-    coh_chips32_avx2(iq, pos, COH_EST_BITS, COH_BITS - COH_EST_BITS, ci, cq, a32r, a32i, b32r, b32i);
-    for (int i = COH_EST_BITS; i < COH_BITS; i += 8) {
-        _mm_storeu_si128((__m128i *) (ar + i), coh_to16_avx2(a32r + i, cs));
-        _mm_storeu_si128((__m128i *) (ai + i), coh_to16_avx2(a32i + i, cs));
-        _mm_storeu_si128((__m128i *) (br + i), coh_to16_avx2(b32r + i, cs));
-        _mm_storeu_si128((__m128i *) (bi + i), coh_to16_avx2(b32i + i, cs));
-    }
-    COH_PHASORS(COH_EST_BITS, COH_BITS)
-#undef COH_PHASORS
+    // Slice, one byte per vector
     int16_t gre, gim;
     coh_channel16(h_re, h_im, &gre, &gim);
     const __m128i gr = _mm_set1_epi16(gre), gi = _mm_set1_epi16(gim);
     const __m128i reverse = _mm_setr_epi8(14, 15, 12, 13, 10, 11, 8, 9, 6, 7, 4, 5, 2, 3, 0, 1);
-    __m128i qual[2] = { _mm_setzero_si128(), _mm_setzero_si128() }, pw[2] = { _mm_setzero_si128(), _mm_setzero_si128() };
-    for (int i = 0; i < COH_BITS; i += 8) {
+    __m128i qual = _mm_setzero_si128(), pw = _mm_setzero_si128();
+    for (int i = 0; i < COH_HALF; i += 8) {
         __m128i xar, xai, xbr, xbi;
         coh_rot_sse(COH_LD(ar + i), COH_LD(ai + i), COH_LD(Pr + i), COH_LD(Pi + i), &xar, &xai);
         coh_rot_sse(COH_LD(br + i), COH_LD(bi + i), COH_LD(Qr + i), COH_LD(Qi + i), &xbr, &xbi);
         const __m128i ya = _mm_add_epi16(_mm_mulhrs_epi16(xar, gr), _mm_mulhrs_epi16(xai, gi));
         const __m128i yb = _mm_add_epi16(_mm_mulhrs_epi16(xbr, gr), _mm_mulhrs_epi16(xbi, gi));
         const __m128i gt = _mm_shuffle_epi8(_mm_cmpgt_epi16(ya, yb), reverse);   // lane 0 -> bit 7
-        out[i >> 3] = (uint8_t) _mm_movemask_epi8(_mm_packs_epi16(gt, _mm_setzero_si128()));
-        const int half = i >= COH_EST_BITS;
-        qual[half] = _mm_add_epi32(qual[half], _mm_madd_epi16(_mm_abs_epi16(_mm_sub_epi16(ya, yb)), ones));
-        pw[half] = _mm_add_epi32(pw[half], _mm_madd_epi16(_mm_add_epi16(_mm_abs_epi16(ya), _mm_abs_epi16(yb)), ones));
+        out[(first + i) >> 3] = (uint8_t) _mm_movemask_epi8(_mm_packs_epi16(gt, _mm_setzero_si128()));
+        qual = _mm_add_epi32(qual, _mm_madd_epi16(_mm_abs_epi16(_mm_sub_epi16(ya, yb)), ones));
+        pw = _mm_add_epi32(pw, _mm_madd_epi16(_mm_add_epi16(_mm_abs_epi16(ya), _mm_abs_epi16(yb)), ones));
     }
 #undef COH_LD
+    *q = coh_quality((uint32_t) coh_hsum_epi32_128(qual), (uint32_t) coh_hsum_epi32_128(pw));
+    return 1;
+}
+
+void STARCH_IMPL(coherent_decode, avx2) (const int16_t * restrict iq, int pos, unsigned thres,
+                                         uint8_t * restrict out, uint32_t * restrict info)
+{
+    __m256i ci[5], cq[5];
+    for (int c = 0; c < 5; c++) {
+        int16_t vi[16], vq[16];
+        for (int j = 0; j < 8; j++) {
+            vi[2 * j] = upsample_coeffs[c][j]; vi[2 * j + 1] = 0;
+            vq[2 * j] = 0; vq[2 * j + 1] = upsample_coeffs[c][j];
+        }
+        ci[c] = _mm256_loadu_si256((const __m256i *) vi);
+        cq[c] = _mm256_loadu_si256((const __m256i *) vq);
+    }
+
+    memset(out, 0, 14);
+    memset(info, 0, COH_INFO_N * sizeof(*info));
+
+    if (!coh_half_avx2(iq, pos, 0, thres, ci, cq, out, &info[COH_INFO_RHO2], &info[COH_INFO_FINE], &info[COH_INFO_Q1]))
+        return;
     info[COH_INFO_DECODED] = 1;
-    info[COH_INFO_Q1] = coh_quality((uint32_t) coh_hsum_epi32_128(qual[0]), (uint32_t) coh_hsum_epi32_128(pw[0]));
-    info[COH_INFO_Q2] = coh_quality((uint32_t) coh_hsum_epi32_128(qual[1]), (uint32_t) coh_hsum_epi32_128(pw[1]));
+    // The second half whatever the DF says (as the magnitude decoder): scoring can
+    // correct the DF bits, and every short DF is one bit from a long one
+    coh_half_avx2(iq, pos, COH_HALF, 0, ci, cq, out, &info[COH_INFO_RHO2B], &info[COH_INFO_FINE2], &info[COH_INFO_Q2]);
 }

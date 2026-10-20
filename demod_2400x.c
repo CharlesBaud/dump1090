@@ -34,6 +34,8 @@
 // Coherent second pass statistics (experiment)
 static struct {
     unsigned long attempts, coherent, rescued, rescued_known, rescued_unknown;
+    unsigned long mixed[2];                 // rescued with one half from the magnitude bits
+    unsigned long rescued_long;             // rescued 112-bit frames
     unsigned long diag_frames, diag_mag_err[4], diag_coh_err[4], diag_coh_worse, diag_coh_better;
     double seconds;
     unsigned long q_attempts[17], q_coherent[17], q_rescued[17];    // by magnitude quality / 16
@@ -52,6 +54,8 @@ static void cohReport(void)
     fprintf(stderr, "coherent: %lu attempts, %lu coherent (rho2), %lu rescued (%lu known aircraft, %lu unknown), %.0f ms\n",
             coh_stats.attempts, coh_stats.coherent, coh_stats.rescued, coh_stats.rescued_known, coh_stats.rescued_unknown,
             coh_stats.seconds * 1e3);
+    fprintf(stderr, "coherent: rescued %lu long frames; %lu with the magnitude second half, %lu with the magnitude first half\n",
+            coh_stats.rescued_long, coh_stats.mixed[0], coh_stats.mixed[1]);
     fprintf(stderr, "coherent by magnitude quality: quality attempts coherent rescued\n");
     for (int b = 0; b < 17; b++)
         if (coh_stats.q_attempts[b])
@@ -418,11 +422,11 @@ static int emitFrame(const struct mag_buf *mag, const struct candidate *c,
                 atexit(cohReport);
         }
         const double t0 = cohNow();
-        unsigned q1, rho2;
+        unsigned q1, rho2, rho2b;
         cc = *c;
         const int qb = c->quality / 16 < 16 ? c->quality / 16 : 16;
         Modes.stats_current.demod_coherent_tried++;
-        if (coherentDecode(iq, mag->validLength, c->pos, cc.msg, &q1, &cc.quality2, &rho2) == 0) {
+        if (coherentDecode(iq, mag->validLength, c->pos, cc.msg, &q1, &cc.quality2, &rho2, &rho2b) == 0) {
             coh_stats.attempts++;
             coh_stats.q_attempts[qb]++;
         }
@@ -432,10 +436,29 @@ static int emitFrame(const struct mag_buf *mag, const struct candidate *c,
             Modes.stats_current.demod_coherent_coherent++;
             coh_stats.coherent++;
             coh_stats.q_coherent[qb]++;
-            const int s2 = scoreModesMessage(cc.msg);
+            int s2 = scoreModesMessage(cc.msg);
+            if (COHERENT_MIX && s2 < SR_ACCEPT_THRESHOLD) {
+                // Each half from the other decoder in turn: the coherent first half with the
+                // magnitude second, then the magnitude first with the coherent second
+                for (int h = 0; h < 2 && s2 < SR_ACCEPT_THRESHOLD; h++) {
+                    struct candidate mix = cc;
+                    const int off = h ? 0 : MODES_SHORT_MSG_BYTES;
+                    memcpy(mix.msg + off, c->msg + off, MODES_SHORT_MSG_BYTES);
+                    if (!h)
+                        mix.quality2 = c->quality2;
+                    const int sm = scoreModesMessage(mix.msg);
+                    if (sm >= SR_ACCEPT_THRESHOLD) {
+                        cc = mix;
+                        s2 = sm;
+                        coh_stats.mixed[h]++;
+                    }
+                }
+            }
             if (s2 >= SR_ACCEPT_THRESHOLD) {
                 Modes.stats_current.demod_coherent_rescued++;
                 coh_stats.rescued++;
+                if (cc.msg[0] & 0x80)
+                    coh_stats.rescued_long++;
                 coh_stats.q_rescued[qb]++;
                 if (scoreIsKnown(s2))
                     coh_stats.rescued_known++;
@@ -490,8 +513,8 @@ static int emitFrame(const struct mag_buf *mag, const struct candidate *c,
             atexit(cohReport);
         }
         uint8_t cmsg[MODES_LONG_MSG_BYTES];
-        unsigned q1, q2, rho2;
-        if (coherentDecode(iq, mag->validLength, c->pos, cmsg, &q1, &q2, &rho2) == 0 && rho2 >= COHERENT_RHO2) {
+        unsigned q1, q2, rho2, rho2b;
+        if (coherentDecode(iq, mag->validLength, c->pos, cmsg, &q1, &q2, &rho2, &rho2b) == 0 && rho2 >= COHERENT_RHO2) {
             const unsigned em = bitErrors(c->msg, mm.msg, mm.msgbits), ec = bitErrors(cmsg, mm.msg, mm.msgbits);
             coh_stats.diag_frames++;
             coh_stats.diag_mag_err[em < 3 ? em : 3]++;

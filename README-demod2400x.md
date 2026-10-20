@@ -34,10 +34,10 @@ recording and synthetic frames; see
 
 | | Stock | DEMOD_2400X | Change | + coherent | Change |
 |---|---|---|---|---|---|
-| Usable messages | 73,146 | 84,389 | +15% | 93,012 | +27% |
-| DF17 (ADS-B) | 10,352 | 11,795 | +14% | 13,214 | +28% |
-| Global CPR positions | 3,510 | 3,970 | +13% | 4,484 | +28% |
-| Aircraft | 136 | 141 | +5 | 153 | +17 |
+| Usable messages | 73,146 | 84,389 | +15% | 93,420 | +28% |
+| DF17 (ADS-B) | 10,352 | 11,795 | +14% | 13,296 | +28% |
+| Global CPR positions | 3,510 | 3,970 | +13% | 4,488 | +28% |
+| Aircraft | 136 | 141 | +5 | 155 | +19 |
 
 Positions and tracks are timed by the wall clock, so files are decoded with
 `--throttle` (at the speed they were captured). Without it the minute is
@@ -49,28 +49,28 @@ The gain is concentrated in weak signals. Messages by signal strength:
 
 | RSSI (dBFS) | Stock | DEMOD_2400X | Change | + coherent | Change |
 |---|---|---|---|---|---|
-| −30 to −27 | 131 | 302 | +131% | 980 | +648% |
-| −27 to −24 | 2,347 | 4,205 | +79% | 6,061 | +158% |
-| −24 to −21 | 7,111 | 9,407 | +32% | 10,780 | +52% |
-| −21 to −18 | 9,010 | 10,759 | +19% | 11,803 | +31% |
-| −18 to −15 | 12,213 | 13,703 | +12% | 14,807 | +21% |
-| −15 to −10 | 18,226 | 19,924 | +9% | 21,379 | +17% |
-| −10 to −5 | 9,952 | 10,710 | +8% | 11,354 | +14% |
-| above −5 | 14,151 | 15,375 | +9% | 15,842 | +12% |
+| −30 to −27 | 131 | 302 | +131% | 1,007 | +669% |
+| −27 to −24 | 2,347 | 4,205 | +79% | 6,167 | +163% |
+| −24 to −21 | 7,111 | 9,407 | +32% | 10,855 | +53% |
+| −21 to −18 | 9,010 | 10,759 | +19% | 11,855 | +32% |
+| −18 to −15 | 12,213 | 13,703 | +12% | 14,859 | +22% |
+| −15 to −10 | 18,226 | 19,924 | +9% | 21,435 | +18% |
+| −10 to −5 | 9,952 | 10,710 | +8% | 11,372 | +14% |
+| above −5 | 14,151 | 15,375 | +9% | 15,864 | +12% |
 
 Position messages by distance from the receiver:
 
 | Distance | Stock | DEMOD_2400X | Change | + coherent | Change | Aircraft (stock / DEMOD_2400X / + coherent) |
 |---|---|---|---|---|---|---|
-| 0–50 km | 737 | 811 | +10% | 874 | +19% | 12 / 13 / 13 |
-| 50–100 km | 1,447 | 1,583 | +9% | 1,726 | +19% | 30 / 31 / 33 |
+| 0–50 km | 737 | 811 | +10% | 880 | +19% | 12 / 13 / 13 |
+| 50–100 km | 1,447 | 1,583 | +9% | 1,733 | +20% | 30 / 31 / 33 |
 | 100–150 km | 893 | 1,011 | +13% | 1,157 | +30% | 33 / 32 / 33 |
-| 150–200 km | 438 | 525 | +20% | 612 | +40% | 20 / 22 / 23 |
-| 200–250 km | 121 | 145 | +20% | 194 | +60% | 10 / 13 / 15 |
-| 250–300 km | 16 | 26 | +62% | 50 | +212% | 2 / 4 / 4 |
+| 150–200 km | 438 | 525 | +20% | 609 | +39% | 20 / 22 / 24 |
+| 200–250 km | 121 | 145 | +20% | 195 | +61% | 10 / 13 / 15 |
+| 250–300 km | 16 | 26 | +62% | 49 | +206% | 2 / 4 / 4 |
 
 Weak synthetic frames (2,000 DF17 frames with a random ±100 kHz carrier
-offset, decoded out of 2,000): 689 (stock), 1,404 (DEMOD_2400X), 1,594
+offset, decoded out of 2,000): 689 (stock), 1,404 (DEMOD_2400X), 1,593
 (+ coherent).
 The generator and checker are in [sim/](sim/).
 

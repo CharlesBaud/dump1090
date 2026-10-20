@@ -3,7 +3,7 @@
 An experimental second pass for frames that the normal DEMOD_2400X decoder
 finds but can't decode. It uses the phase of the signal, which the normal
 decoder throws away, to recover some of those frames. On the 60 s Pi 4
-RTL-SDR capture it adds about 10% more messages (84,389 → 93,012) for about
+RTL-SDR capture it adds about 11% more messages (84,389 → 93,420) for about
 20% more demodulation CPU.
 
 Branch: `demod-2400x-coherent` (built on `demod-2400x`). Switched on at build
@@ -36,6 +36,9 @@ Everything is integer arithmetic (int16 where it fits, int32 otherwise), with
 no FFT, no atan and no phase angles: it is a bank of correlators (matched
 filters).
 
+Steps 2–6 are done for each 56-bit half of the frame on its own, by the same
+function: bits 0–55, then bits 56–111 (step 7).
+
 ### 1. When it runs
 
 In `emitFrame()` (`demod_2400x.c`), after the normal decoder has produced
@@ -61,21 +64,22 @@ normal decoder chose (so the timing is the one the magnitude decoder found
 best). This gives two complex numbers per bit, `a` (first chip) and `b`
 (second chip), but keeps I and Q instead of taking the magnitude.
 
-The chips are scaled with one shift for the whole frame so the largest fits
-in 13 bits, then stored as int16.
+The chips are scaled with one shift for the half so the largest fits in 13
+bits, then stored as int16.
 
 ### 3. A carrier sample from every bit, whatever the data
 
 In each bit exactly one of the two chips has the pulse. The kernel takes the
 chip with the larger magnitude (`|a|² ≥ |b|²`) as that bit's **carrier
-sample**. This gives 56 carrier samples, one per microsecond, over the first
-56 bits, without knowing the data.
+sample**. This gives 56 carrier samples, one per microsecond, over the
+half, without knowing the data.
 
 The choice is a decision, so on a weak bit noise sometimes wins and the
 sample is just noise. The alternative, the pair sum `a + b`, always contains
 the pulse but also the noise of the empty chip, twice the noise power.
 Taking the larger chip is better overall: on the 60 s capture it rescues 14%
-more frames than the pair sum (8,608 against 7,530).
+more frames than the pair sum (8,608 against 7,530, measured before the two
+halves were estimated separately).
 
 ### 4. Find the frequency offset
 
@@ -110,26 +114,46 @@ The same sum also tells us whether the frame is coherent at all:
 
 `rho2` is 1 for a perfectly steady carrier and drops towards 0 for noise,
 for a drifting or chirping transmitter, or for frames with phase modulation
-on the pulses. Below `COHERENT_RHO2` (614/1024 = 0.6) the kernel stops here
-and the frame is left alone.
+on the pulses. If the first half is below `COHERENT_RHO2` (614/1024 = 0.6)
+the kernel stops here and the frame is left alone.
 
 ### 6. Slice the bits
 
-Only for frames that pass the rho2 gate, the kernel interpolates the chips of
-bits 56–111 as well (with the same scaling), then for every bit:
+For each of the 56 bits of the half:
 
 * rotates `a` by `P[i]` and `b` by `Q[i]`;
 * projects each onto `h` (the real part of `chip × conj(h)`), giving `y_a`
   and `y_b`: how much of each chip lines up with the carrier;
 * bit = 1 if `y_a > y_b`.
 
-It also computes a quality for each 56-bit half, like the magnitude one:
+It also computes a quality for the half, like the magnitude one:
 `256 · Σ|y_a − y_b| / Σ(|y_a| + |y_b|)`. The second-half quality is used,
 as in the normal path, to reject long frames without a full CRC whose second
 half is poor.
 
-The frequency and phase are estimated from the first 56 bits only and held
-for all 112: a crystal transmitter doesn't drift measurably within 120 µs.
+### 7. The second half, on its own
+
+If the first half passed the rho2 gate, bits 56–111 go through steps 2–6
+again with nothing carried over: their own scaling, frequency, phase and
+channel. It is always sliced; there is no gate on it.
+
+* **Why separately:** holding the first half's frequency and phase for all 112
+  bits extrapolates any small frequency error, and the phase error grows
+  along the frame. In the Python model (`sim/coh_seg.py`), on frames whose
+  bits are known, that gave 2 or more wrong bits in the second half of 444
+  frames out of about 16,600; estimating each half on its own cut it to 8.
+  On the 60 s capture it rescues 4.6% more frames (8,608 → 9,003), all of
+  them long ones, for about 6% more time in the coherent pass. A short frame
+  never depends on bits after it.
+* **Whatever the DF says:** the second half is decoded even if the first bit
+  says the frame is short, as the magnitude decoder does. Scoring can correct
+  the DF bits, and every short DF is one bit from a long one (DF0/4/5/11
+  against DF16/20/21/24).
+
+`COHERENT_MIX` (off by default) adds one more try: if the coherent frame
+fails the CRC, it is tried again with the magnitude decoder's second half,
+then with the magnitude first half. On the 60 s capture that rescues 75 more
+frames (+0.8%) for about 1% more coherent-pass time.
 
 ## Results
 
@@ -139,31 +163,31 @@ Raspberry Pi 5 (comparisons with stock dump1090 are in
 
 | | Without coherent | With coherent |
 |---|---|---|
-| Messages | 84,389 | 93,012 (+10%) |
-| DF17 (ADS-B) | 11,795 | 13,214 (+12%) |
-| Global CPR positions | 3,970 | 4,484 (+13%) |
-| Messages at −30 to −24 dBFS | 4,507 | 7,041 (+56%) |
-| Aircraft | 141 | 153 |
-| Demodulation CPU | 4.04 s | 4.85 s |
+| Messages | 84,389 | 93,420 (+11%) |
+| DF17 (ADS-B) | 11,795 | 13,296 (+13%) |
+| Global CPR positions | 3,970 | 4,488 (+13%) |
+| Messages at −30 to −24 dBFS | 4,507 | 7,174 (+59%) |
+| Aircraft | 141 | 155 |
+| Demodulation CPU | 4.04 s | 4.88 s |
 
-The coherent pass itself takes about 0.73 s for the 60 s of signal.
+The coherent pass itself takes about 0.77 s for the 60 s of signal.
 
 Coherent attempts by the magnitude quality of the failed frame:
 
 | Magnitude quality | Attempts | Coherent (rho2 ≥ 0.6) | Rescued |
 |---|---|---|---|
-| 96–111 | 256,005 | 30,879 | 1,767 |
-| 112–127 | 187,360 | 26,837 | 2,428 |
-| 128–143 | 116,974 | 19,607 | 1,905 |
-| 144–159 | 53,554 | 14,462 | 1,231 |
-| 160–175 | 24,332 | 10,758 | 789 |
-| 176–191 | 10,696 | 6,145 | 390 |
-| 192–207 | 2,789 | 2,016 | 94 |
-| 208+ | 181 | 148 | 4 |
-| **Total** | **651,891** | **110,852** | **8,608** |
+| 96–111 | 255,225 | 30,539 | 1,867 |
+| 112–127 | 186,851 | 26,534 | 2,553 |
+| 128–143 | 116,696 | 19,438 | 1,981 |
+| 144–159 | 53,397 | 14,374 | 1,284 |
+| 160–175 | 24,182 | 10,655 | 795 |
+| 176–191 | 10,638 | 6,106 | 411 |
+| 192–207 | 2,780 | 2,007 | 105 |
+| 208+ | 180 | 147 | 7 |
+| **Total** | **649,949** | **109,800** | **9,003** |
 
-Of the 8,608 rescued frames, 8,561 are from aircraft already known from
-other messages; 47 are from addresses not seen otherwise. As in the stock
+Of the 9,003 rescued frames, 8,949 are from aircraft already known from
+other messages; 54 are from addresses not seen otherwise. As in the stock
 decoder, a message from an unknown address needs confirmation before it
 creates an aircraft, so the risk of false aircraft is the same as before.
 
@@ -180,7 +204,7 @@ aircraft whose transmitters aren't phase-stable.
 `stats.json` (in the `--write-json` directory) has the coherent counts in
 each period's `local` section, and `--stats` prints them too:
 
-    "coherent":{"tried":651891,"coherent":110852,"rescued":8608}
+    "coherent":{"tried":649949,"coherent":109800,"rescued":9003}
 
 * `tried`: frames that failed the CRC and passed the quality gate;
 * `coherent`: of those, frames whose carrier passed the rho2 gate;
@@ -206,15 +230,16 @@ implementations that give bit-identical results:
 
 | | Full decode | Stopped at the rho2 gate |
 |---|---|---|
-| Generic C (Pi 5) | 4.6 µs | 1.7 µs |
-| NEON, aarch64 (Pi 5) | 1.51 µs | 0.85 µs |
-| NEON, ARMv7 (Pi 5, 32-bit) | 2.05 µs | 1.14 µs |
-| NEON, aarch64 (Pi 4) | 2.9 µs | 1.58 µs |
+| Generic C (Pi 5) | 4.2 µs | 1.6 µs |
+| NEON, aarch64 (Pi 5) | 1.85 µs | 0.85 µs |
+| NEON, ARMv7 (Pi 5, 32-bit) | 2.5 µs | 1.16 µs |
+| NEON, aarch64 (Pi 4) | not yet remeasured (2.9 µs with one estimate) | 1.58 µs |
 | AVX2 | checked under QEMU only, not yet timed | |
 
-Most frames stop at the gate, so the cost is dominated by the first stage:
-interpolating 112 complex chips (about half the time), converting them to
-int16, the frequency search and the correlation.
+Most frames stop at the gate, so the cost is dominated by the first half:
+interpolating its 112 complex chips (about half the time), converting them to
+int16, the frequency search and the correlation. A full decode does all of
+that twice.
 
 `starch-benchmark coherent_decode` times and checks it; `-V` checks every
 implementation against generic.
@@ -240,7 +265,8 @@ not `CFLAGS`, which would replace `-O3`).
 | Define | Default | Meaning |
 |---|---|---|
 | `COHERENT_GATE` | 96 | Minimum magnitude quality (first 56 bits, out of 256) to try |
-| `COHERENT_RHO2` | 614 | Minimum carrier coherence in 1/1024 (0.6) |
+| `COHERENT_RHO2` | 614 | Minimum carrier coherence of the first half, in 1/1024 (0.6) |
+| `COHERENT_MIX` | 0 | 1: if the coherent frame fails, try it with each half from the magnitude bits |
 | `COHERENT_STATS` | 0 | 1: print the statistics above at exit |
 | `COHERENT_DIAG` | 0 | 1: also decode frames that already passed, and count bit errors of both decoders |
 | `COHERENT_DUMP` | 0 | 1 (with `COHERENT_DIAG`): one line per frame with frequency and errors |
@@ -267,6 +293,9 @@ then ported to integer C.
   lengths, FFT, block sizes).
 * `coh_larger.py chips.bin [records]`: carrier samples from the larger chip
   (as the kernel does now) against the pair sum `a + b`.
+* `coh_seg.py chips.bin [records]`: one estimate for all 112 bits against
+  each half (or 28- or 14-bit segment) estimated on its own, and block length
+  8 against 4 or 2.
 * `coh_snr.py chips.bin [records]`: decision SNR of the magnitude and
   coherent decoders on frames whose bits are known.
 * `coh_judge.py`: CRC check used by the scripts to judge a rescue.
@@ -285,3 +314,11 @@ then ported to integer C.
 * **Half-band frequency search**: no better, dropped.
 * **Pair sums `a + b` as carrier samples** (the first version): 14% fewer
   rescues than taking the larger chip.
+* **Shorter independent segments** (4 × 28 or 8 × 14 bits): fewer errors on
+  strong frames, but on the weak frames that need rescuing the estimate is
+  too noisy: 4% and 12% fewer rescues than two halves (`coh_seg.py`).
+* **Blocks of 4 bits** instead of 8 in the frequency search: the same answers
+  (+0.5% rescues in the model) for twice the search work.
+* **Keeping the magnitude second half when its quality2 is high**: worse at
+  every threshold (quality2 ≥ 200: −2 rescues, ≥ 160: −247, ≥ 120: −1,464).
+  The coherent second half is better even when the magnitude one looks clean.

@@ -270,46 +270,33 @@ static inline coh_c16 coh_rot(coh_c16 x, coh_c16 p)
     return r;
 }
 
-// Chips of bits first .. first+n-1 as int16 a (first chip) and b (second chip)
-static void coh_chips_generic(const int16_t *iq, int pos, int first, int n, int shift,
-                              coh_c16 *a, coh_c16 *b)
+// One half of the frame, bits first .. first+55, on its own: chips and their shift,
+// carrier frequency, channel h and rho2; if rho2 >= thres, slice its 56 bits into
+// out[first/8 ..] and return 1 with the quality in *q
+static int coh_half_generic(const int16_t *iq, int pos, int first, unsigned thres,
+                            uint8_t *out, uint32_t *rho2_out, uint32_t *f_out, uint32_t *q)
 {
-    for (int i = first; i < first + n; i++) {
-        int32_t re, im;
-        coh_chip(iq, pos + COH_DATA_OFFSET + 12 * i, &re, &im);
-        a[i] = (coh_c16) { coh_chip16(re, shift), coh_chip16(im, shift) };
-        coh_chip(iq, pos + COH_DATA_OFFSET + 12 * i + 6, &re, &im);
-        b[i] = (coh_c16) { coh_chip16(re, shift), coh_chip16(im, shift) };
-    }
-}
+    coh_c16 a[COH_HALF], b[COH_HALF], P[COH_HALF], Q[COH_HALF];
 
-void STARCH_IMPL(coherent_decode, generic) (const int16_t * restrict iq, int pos, unsigned thres,
-                                            uint8_t * restrict out, uint32_t * restrict info)
-{
-    coh_c16 a[COH_BITS], b[COH_BITS], P[COH_BITS], Q[COH_BITS];
-
-    memset(out, 0, 14);
-    memset(info, 0, COH_INFO_N * sizeof(*info));
-
-    // Stage 1 chips: the largest of the first 56 bits sets the shift. One shift for
-    // the whole frame keeps the relative amplitudes, which the slicer compares
-    int32_t r32[2 * COH_EST_BITS], i32[2 * COH_EST_BITS];
+    // Chips: the largest sets the shift. One shift for the half keeps the relative
+    // amplitudes, which the slicer compares
+    int32_t r32[2 * COH_HALF], i32[2 * COH_HALF];
     uint32_t cmax = 0;
-    for (int k = 0; k < 2 * COH_EST_BITS; k++) {
-        coh_chip(iq, pos + COH_DATA_OFFSET + 6 * k, &r32[k], &i32[k]);
+    for (int k = 0; k < 2 * COH_HALF; k++) {
+        coh_chip(iq, pos + COH_DATA_OFFSET + 6 * (2 * first + k), &r32[k], &i32[k]);
         if (coh_abs(r32[k]) > cmax) cmax = coh_abs(r32[k]);
         if (coh_abs(i32[k]) > cmax) cmax = coh_abs(i32[k]);
     }
     const int cs = coh_shift(cmax, COH_CHIP_BITS);
-    for (int i = 0; i < COH_EST_BITS; i++) {
+    for (int i = 0; i < COH_HALF; i++) {
         a[i] = (coh_c16) { coh_chip16(r32[2 * i], cs), coh_chip16(i32[2 * i], cs) };
         b[i] = (coh_c16) { coh_chip16(r32[2 * i + 1], cs), coh_chip16(i32[2 * i + 1], cs) };
     }
 
     // Carrier sample of each bit: the chip with the larger magnitude, which holds the
     // pulse unless noise wins (a decision, but 3 dB less noise than a + b when right)
-    uint8_t pick_a[COH_EST_BITS];
-    for (int i = 0; i < COH_EST_BITS; i++)
+    uint8_t pick_a[COH_HALF];
+    for (int i = 0; i < COH_HALF; i++)
         pick_a[i] = a[i].re * a[i].re + a[i].im * a[i].im >= b[i].re * b[i].re + b[i].im * b[i].im;
 
     // Block sums of the carrier samples, normalised
@@ -351,50 +338,57 @@ void STARCH_IMPL(coherent_decode, generic) (const int16_t * restrict iq, int pos
     for (int i = 1; i < 8; i++)
         P[i] = coh_rot(P[i - 1], rb);
     const coh_c16 rb8 = coh_rot(P[7], rb);
-    for (int i = 8; i < COH_EST_BITS; i++)                         // the rest after the gate
+    for (int i = 8; i < COH_HALF; i++)
         P[i] = coh_rot(P[i - 8], rb8);
-    for (int i = 0; i < COH_EST_BITS; i++)
+    for (int i = 0; i < COH_HALF; i++)
         Q[i] = coh_rot(rc, P[i]);
 
-    // Correlation over the first 56 bits: with the rotation removed, the carrier samples
-    // of a coherent frame all point the same way, so h (their sum) is the channel: its
-    // phase is the carrier phase. rho2 compares |h|^2 with what a perfectly coherent
-    // frame of the same energy would give
+    // Correlation: with the rotation removed, the carrier samples of a coherent frame
+    // all point the same way, so h (their sum) is the channel: its phase is the carrier
+    // phase. rho2 compares |h|^2 with what a perfectly coherent half of the same energy
+    // would give
     int32_t hre = 0, him = 0;
     uint32_t e2 = 0;
-    for (int i = 0; i < COH_EST_BITS; i++) {
+    for (int i = 0; i < COH_HALF; i++) {
         const coh_c16 c = pick_a[i] ? coh_rot(a[i], P[i]) : coh_rot(b[i], Q[i]);
         const int16_t cre = c.re, cim = c.im;
         hre += cre; him += cim;
         e2 += (uint32_t) ((cre >> 4) * (cre >> 4)) + (uint32_t) ((cim >> 4) * (cim >> 4));
     }
     const uint32_t rho2 = coh_rho2(hre, him, e2);
-    info[COH_INFO_RHO2] = rho2;
-    info[COH_INFO_FINE] = (uint32_t) f;
+    *rho2_out = rho2;
+    *f_out = (uint32_t) f;
     if (rho2 < thres)
-        return;
+        return 0;
 
-    // Stage 2 chips (only for frames that passed the gate), then slice all 112 bits:
-    // projecting each de-rotated chip on h keeps the signal and only the noise in phase
-    // with it; the pulse is in the chip with the larger projection
-    coh_chips_generic(iq, pos, COH_EST_BITS, COH_BITS - COH_EST_BITS, cs, a, b);
-    for (int i = COH_EST_BITS; i < COH_BITS; i++) {
-        P[i] = coh_rot(P[i - 8], rb8);
-        Q[i] = coh_rot(rc, P[i]);
-    }
+    // Slice: projecting each de-rotated chip on h keeps the signal and only the noise
+    // in phase with it; the pulse is in the chip with the larger projection
     int16_t gre, gim;
     coh_channel16(hre, him, &gre, &gim);
-    uint32_t qual[2] = { 0, 0 }, pw[2] = { 0, 0 };
-    for (int i = 0; i < COH_BITS; i++) {
+    uint32_t qual = 0, pw = 0;
+    for (int i = 0; i < COH_HALF; i++) {
         const coh_c16 ra = coh_rot(a[i], P[i]), rbb = coh_rot(b[i], Q[i]);
         const int16_t ya = (int16_t) (coh_mulq15(ra.re, gre) + coh_mulq15(ra.im, gim));
         const int16_t yb = (int16_t) (coh_mulq15(rbb.re, gre) + coh_mulq15(rbb.im, gim));
         if (ya > yb)
-            out[i >> 3] |= (uint8_t) (0x80 >> (i & 7));
-        qual[i >= COH_EST_BITS] += coh_abs(ya - yb);
-        pw[i >= COH_EST_BITS] += coh_abs(ya) + coh_abs(yb);
+            out[(first + i) >> 3] |= (uint8_t) (0x80 >> (i & 7));
+        qual += coh_abs(ya - yb);
+        pw += coh_abs(ya) + coh_abs(yb);
     }
+    *q = coh_quality(qual, pw);
+    return 1;
+}
+
+void STARCH_IMPL(coherent_decode, generic) (const int16_t * restrict iq, int pos, unsigned thres,
+                                            uint8_t * restrict out, uint32_t * restrict info)
+{
+    memset(out, 0, 14);
+    memset(info, 0, COH_INFO_N * sizeof(*info));
+
+    if (!coh_half_generic(iq, pos, 0, thres, out, &info[COH_INFO_RHO2], &info[COH_INFO_FINE], &info[COH_INFO_Q1]))
+        return;
     info[COH_INFO_DECODED] = 1;
-    info[COH_INFO_Q1] = coh_quality(qual[0], pw[0]);
-    info[COH_INFO_Q2] = coh_quality(qual[1], pw[1]);
+    // The second half whatever the DF says (as the magnitude decoder): scoring can
+    // correct the DF bits, and every short DF is one bit from a long one
+    coh_half_generic(iq, pos, COH_HALF, 0, out, &info[COH_INFO_RHO2B], &info[COH_INFO_FINE2], &info[COH_INFO_Q2]);
 }

@@ -19,6 +19,9 @@
 #ifndef COHERENT_RHO2
 #define COHERENT_RHO2   614     // minimum carrier coherence, in 1/1024 (0.6)
 #endif
+#ifndef COHERENT_MIX
+#define COHERENT_MIX    0       // 1: if the coherent frame fails, also try it with each half from the magnitude bits
+#endif
 #ifndef COHERENT_STATS
 #define COHERENT_STATS  0       // 1: print statistics at exit
 #endif
@@ -38,11 +41,11 @@
 // Coherent decode of the frame whose preamble starts at 12 MHz position 'pos'
 // (the position the magnitude decoder chose). iq: 12-bit I/Q pairs, iq_len
 // samples. out: 14 bytes; q1, q2: quality of the two 56-bit halves (0..256);
-// rho2: carrier coherence over the first 56 bits in 1/1024 (~1024 for a stable
-// carrier); below COHERENT_RHO2 the bits aren't sliced.
+// rho2, rho2b: carrier coherence of each half in 1/1024 (~1024 for a stable
+// carrier); below COHERENT_RHO2 (first half) the bits aren't sliced.
 // Returns 0, or -1 if the frame runs past iq_len.
 int coherentDecode(const int16_t *iq, unsigned iq_len, int pos,
-                   uint8_t *out, unsigned *q1, unsigned *q2, unsigned *rho2);
+                   uint8_t *out, unsigned *q1, unsigned *q2, unsigned *rho2, unsigned *rho2b);
 
 // Complex filter outputs (int32 I, Q, before rounding) at the chip centres
 // pos + 6k, k = 0 .. nchips-1: 16 preamble chips then 2 per data bit.

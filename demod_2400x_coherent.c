@@ -31,10 +31,10 @@ int coherentChips(const int16_t *iq, unsigned iq_len, int pos, int32_t (*chips)[
     return 0;
 }
 
-// Bounds check, then the starch kernel; the rho2 gate lets the kernel skip the
-// second half of frames that aren't coherent
+// Bounds check, then the starch kernel; the rho2 gate (first half) lets the kernel
+// stop early on frames that aren't coherent. rho2b: coherence of the second half
 int coherentDecode(const int16_t *iq, unsigned iq_len, int pos,
-                   uint8_t *out, unsigned *q1, unsigned *q2, unsigned *rho2)
+                   uint8_t *out, unsigned *q1, unsigned *q2, unsigned *rho2, unsigned *rho2b)
 {
     uint32_t info[COH_INFO_N];
 
@@ -43,6 +43,7 @@ int coherentDecode(const int16_t *iq, unsigned iq_len, int pos,
 
     starch_coherent_decode(iq, pos, COHERENT_RHO2, out, info);
     *rho2 = info[COH_INFO_RHO2];
+    *rho2b = info[COH_INFO_RHO2B];
     *q1 = info[COH_INFO_Q1];
     *q2 = info[COH_INFO_Q2];
     coh_last_freq_hz = (float) ((-62500.0 + 125000.0 * info[COH_INFO_FINE] / (COH_FINE_BINS - 1)));

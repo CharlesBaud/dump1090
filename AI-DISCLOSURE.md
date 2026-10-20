@@ -26,7 +26,8 @@ README-demod2400x.md and this file were also written with Claude Code.
 
 The coherent second pass (`demod-2400x-coherent`) follows my specification:
 a separate file called from `emitFrame()` for frames the magnitude bits
-don't decode, the frequency and phase estimated from the first 56 bits, a
+don't decode, the frequency and phase estimated for each 56-bit half on its
+own (and the second half decoded whatever the DF says), a
 correlator (matched filter) in blocks of 8 bits rather than an FFT or phase
 angles, integer arithmetic (int16 where possible), transmitters without a
 stable carrier left alone, and each bit's carrier sample taken from the chip

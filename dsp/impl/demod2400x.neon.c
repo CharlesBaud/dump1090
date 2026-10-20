@@ -82,6 +82,25 @@ uint32x4_t isqrt_u32x4_neon(const uint32x4_t x)
 #endif
 }
 
+// floor(sqrt(x)) to within one, for the upsampler's magnitudes (x < 2^31): the
+// exact fix-ups of isqrt_u32x4_neon() left out (starch-benchmark accepts +-1)
+static inline __attribute__((always_inline))
+uint32x4_t sqrt1_u32x4_neon(const uint32x4_t x)
+{
+#ifdef __aarch64__
+    // Correctly rounded sqrt + 1/64, truncated: exact or one too large
+    return vcvtq_u32_f32(vaddq_f32(vsqrtq_f32(vcvtq_f32_u32(x)), vdupq_n_f32(1.0f / 64)));
+#else
+    // No vector sqrt: sqrt(x + 1) from the estimate + one Newton step, relative error
+    // below 2^-15.9 (0.72 at the largest x), so one too small to one too large.
+    // x + 1 keeps the estimate finite at x = 0
+    const float32x4_t f = vcvtq_f32_u32(vaddq_u32(x, vdupq_n_u32(1)));
+    float32x4_t r = vrsqrteq_f32(f);
+    r = vmulq_f32(vrsqrtsq_f32(vmulq_f32(f, r), r), r);
+    return vcvtq_u32_f32(vmulq_f32(f, r));
+#endif
+}
+
 // Power (or magnitude) of 4 filter outputs already rounded by UPSAMPLE_SHIFT
 static inline __attribute__((always_inline))
 uint16x4_t pow4_rounded_neon(int32x4_t si, int32x4_t sq, int shift)
@@ -90,7 +109,7 @@ uint16x4_t pow4_rounded_neon(int32x4_t si, int32x4_t sq, int shift)
 
 #ifdef USE_MAGNITUDE
     (void)shift;
-    return vmovn_u32(isqrt_u32x4_neon(pwr));
+    return vmovn_u32(sqrt1_u32x4_neon(pwr));
 #else
     return vqmovn_u32(vshlq_u32(pwr, vdupq_n_s32(-shift)));  // Set gain, saturate to 65535
 #endif

@@ -72,6 +72,7 @@ RTL-SDR capture decoded on a Raspberry Pi 5 unless stated otherwise.
 | `decode_bits` starch kernel | Called 5 times per candidate, ~2M candidates a minute | 82 → 26 ns per call; demod 4.8 → 4.3 s |
 | Adaptive gain fed | It was not called at all by the new demodulator | Same gain decisions as stock |
 | Signal power capped at full scale | Clipped frames reported up to +1.1 dBFS | RSSI matches stock (mean +0.01 dB, σ 0.2 dB) |
+| Upsampler square root within ±1 (no exact fix-ups) | Only the benchmark needed exact magnitudes | `upsample12` −10.7% on the Pi 3B (ARMv7), −6% on the Pi 5; CPU −2.8% (RTL-SDR), −3.0% (SDRplay) on the Pi 5; same aircraft and positions, messages ±1 |
 | Demodulate in 32768-sample pieces (`DEMOD_BLOCK`) | The 12 MHz data for a whole FIFO buffer is 1.3 MB; a piece's fits in L2 between upsample, preamble search and decodes. Done inside `demodulate2400x()`, as the drivers need the FIFO buffers to stay the size of their transfers | Output byte-identical; CPU −4.4% (RTL-SDR), −8.4% (SDRplay) on the Pi 5 |
 
 ### Overflow bound
@@ -86,9 +87,22 @@ shift 4, the worst case is 1.95·10⁹. A `_Static_assert` in
 ### Bit-exactness
 
 Generic is the reference; NEON and AVX2 must match it exactly, which
-`starch-benchmark -V` checks. That means exact methods only:
+`starch-benchmark -V` checks. That means exact methods only, with one
+exception:
 
-* Square root: float sqrt, then integer checks in both directions.
+* Square root in the upsampler (`sqrt1_u32x4_neon`, `sqrt1_u32x8_avx2`):
+  within ±1 of generic's exact `floor(sqrt(I² + Q²))`, and `-V` accepts ±1
+  for `upsample12` only. The exact integer fix-ups made no difference to
+  the decoding. AArch64 and AVX2 truncate `sqrt + 1/64`, which gives exact
+  or one too large; under `-ffast-math` GCC may turn the AVX2 sqrt into
+  `vrsqrtps` plus a Newton step, about 2⁻²² relative error. ARMv7 NEON has
+  no vector sqrt, so it uses the `vrsqrte` estimate (8-bit table, relative
+  error 2⁻⁸·²⁵ measured over every float in [1, 4), where the pattern
+  repeats for each factor of 4) and one `vrsqrts` Newton step (2⁻¹⁵·⁹, so
+  0.72 at the largest power). It takes √(x + 1), which keeps the estimate
+  finite at 0.
+* Square root elsewhere (the converter's mean level): float sqrt, then
+  integer checks in both directions.
 * Metric divide: float divide, then integer checks in both directions.
 * The mirror trick is exact integer arithmetic. Generic keeps the direct form.
 

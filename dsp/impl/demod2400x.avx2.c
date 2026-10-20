@@ -87,6 +87,17 @@ __m256i isqrt_u32x8_avx2(const __m256i x)
     return _mm256_sub_epi32(q, _mm256_cmpeq_epi32(_mm256_max_epu32(q1q1, x), x));
 }
 
+// floor(sqrt(x)) to within one, for the upsampler's magnitudes (x < 2^31): the
+// exact fix-ups of isqrt_u32x8_avx2() left out (starch-benchmark accepts +-1).
+// sqrt(x + 1) + 1/64, truncated; -ffast-math may make the sqrt an estimate + one
+// Newton step (relative error about 2^-22), and x + 1 keeps a zero away from it
+static inline __attribute__((always_inline))
+__m256i sqrt1_u32x8_avx2(const __m256i x)
+{
+    const __m256 f = _mm256_cvtepi32_ps(_mm256_add_epi32(x, _mm256_set1_epi32(1)));
+    return _mm256_cvttps_epi32(_mm256_add_ps(_mm256_sqrt_ps(f), _mm256_set1_ps(1.0f / 64)));
+}
+
 // Power (or magnitude) of 8 filter outputs already rounded by UPSAMPLE_SHIFT
 static inline __attribute__((always_inline))
 __m128i pow8_rounded_avx2(__m256i si, __m256i sq, int shift)
@@ -95,7 +106,7 @@ __m128i pow8_rounded_avx2(__m256i si, __m256i sq, int shift)
 
 #ifdef USE_MAGNITUDE
     (void)shift;
-    pwr = isqrt_u32x8_avx2(pwr);
+    pwr = sqrt1_u32x8_avx2(pwr);
 #else
     pwr = _mm256_srl_epi32(pwr, _mm_cvtsi32_si128(shift));    // Set gain
     pwr = _mm256_min_epu32(pwr, _mm256_set1_epi32(65535));

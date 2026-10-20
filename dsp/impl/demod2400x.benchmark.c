@@ -146,9 +146,17 @@ bool STARCH_BENCHMARK_VERIFY(upsample12) (const int16_t *in, int len, int shift,
     }
 #endif
 
+    // SIMD magnitudes leave out the exact-integer fix-ups of the square root, so they
+    // may be one either side of generic's exact floor(sqrt(I^2 + Q^2))
+#ifdef USE_MAGNITUDE
+    const int tol = 1;
+#else
+    const int tol = 0;
+#endif
     for (size_t k = 0; k < size; ++k) {
-        if (out[k] != ref[k]) {
-            fprintf(stderr, "verification failed: out[%zu]=%u, expected %u\n", k, out[k], ref[k]);
+        const int d = (int) out[k] - (int) ref[k];
+        if (d < -tol || d > tol) {
+            fprintf(stderr, "verification failed: out[%zu]=%u, expected %u (+-%d)\n", k, out[k], ref[k], tol);
             okay = false;
             break;
         }

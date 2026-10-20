@@ -132,16 +132,11 @@ int STARCH_IMPL(locate_preamble, generic) (const uint16_t * restrict pp, int nt,
 
         for (int i = 0; i < plen - 15; i++) {
 
-#ifdef PREAMBLE_MIN_PULSE
             uint32_t minp =
                 MIN(
                     MIN(p[0], p[2]),
                     MIN(p[7], p[9])
                 );
-#endif
-#ifdef PREAMBLE_SUM_PULSE
-            uint32_t minp = p[0] + p[2] + p[7] + p[9];
-#endif
             uint32_t gap =
                 p[ 1] +
                 p[ 3] +

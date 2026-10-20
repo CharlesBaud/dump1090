@@ -277,12 +277,7 @@ __m256i div_u32x8_avx2(const __m256i n, const __m256i d)
 static inline __attribute__((always_inline))
 uint8_t preamble_metric1(const uint16_t * restrict p, unsigned thres)
 {
-#ifdef PREAMBLE_MIN_PULSE
     uint32_t minp = MIN(MIN(p[0], p[2]), MIN(p[7], p[9]));
-#endif
-#ifdef PREAMBLE_SUM_PULSE
-    uint32_t minp = p[0] + p[2] + p[7] + p[9];
-#endif
     uint32_t gap = p[1] + p[3] + p[4] + p[5] + p[6] + p[8] +
                    p[10] + p[11] + p[12] + p[13] + p[14] + p[15];
 
@@ -330,17 +325,11 @@ void preamble_metric_block_avx2(const uint16_t * restrict p, int n8, unsigned th
         s4a = s4b;
 
         // Metric = (256 * minp) / (minp + gap + 1)
-#ifdef PREAMBLE_MIN_PULSE
         const __m128i m16 = _mm_min_epu16(_mm_min_epu16(_mm_loadu_si128((const __m128i *) (p + 0)),
                                                         _mm_loadu_si128((const __m128i *) (p + 2))),
                                           _mm_min_epu16(_mm_loadu_si128((const __m128i *) (p + 7)),
                                                         _mm_loadu_si128((const __m128i *) (p + 9))));
         const __m256i minp = _mm256_cvtepu16_epi32(m16);
-#endif
-#ifdef PREAMBLE_SUM_PULSE
-        const __m256i minp = _mm256_add_epi32(_mm256_add_epi32(load_u16x8_u32_avx2(p + 0), load_u16x8_u32_avx2(p + 2)),
-                                              _mm256_add_epi32(load_u16x8_u32_avx2(p + 7), load_u16x8_u32_avx2(p + 9)));
-#endif
         const __m256i n = _mm256_slli_epi32(minp, 8);
         const __m256i d = _mm256_add_epi32(gap, minp);
 

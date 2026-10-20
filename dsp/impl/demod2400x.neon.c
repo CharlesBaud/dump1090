@@ -222,11 +222,11 @@ static const uint8_t interleave5_tbx1[5][16] = {
 };
 #endif
 
+#ifdef __aarch64__
 // out[5*w + c] = ph[c][w], w = 0..7
 static inline __attribute__((always_inline))
 void interleave5_u16x8_neon(const uint16x8_t * restrict ph, uint16_t * restrict out)
 {
-#ifdef __aarch64__
     uint8x16x4_t t;
     t.val[0] = vreinterpretq_u8_u16(ph[0]);
     t.val[1] = vreinterpretq_u8_u16(ph[1]);
@@ -238,14 +238,24 @@ void interleave5_u16x8_neon(const uint16x8_t * restrict ph, uint16_t * restrict 
         const uint8x16_t o = vqtbx1q_u8(vqtbl4q_u8(t, vld1q_u8(interleave5_tbl4[v])), e, vld1q_u8(interleave5_tbx1[v]));
         vst1q_u16(out + 8 * v, vreinterpretq_u16_u8(o));
     }
-#else
-    uint16_t t[5][8];
-    for (int c = 0; c < 5; c++)
-        vst1q_u16(t[c], ph[c]);
-    for (int w = 0; w < 8; w++)
-        for (int c = 0; c < 5; c++)
-            out[5 * w + c] = t[c][w];
+}
 #endif
+
+// All 5 phases for the 8 windows at in[2 * (0..14)]
+static inline __attribute__((always_inline))
+void upsample8_neon(const int16_t * restrict p, int mirrored, const int16x4_t * restrict pc,
+                    const int16x4_t * restrict mc, int shift, uint16x8_t * restrict ph)
+{
+    int16x8x2_t s[8];
+    for (int k = 0; k < 8; k++)
+        s[k] = vld2q_s16(p + 2 * k);
+
+    if (mirrored) {
+        upsample_mirror8_neon(s, pc, mc, shift, ph);
+    } else {
+        for (int c = 0; c < 5; c++)
+            ph[c] = upsample_phase8_neon(s, upsample_coeffs[c], shift);
+    }
 }
 
 #define UPSAMPLE_BLOCK 48 // Windows per block, multiple of 48: 5*48 outputs = 40 per phase
@@ -270,25 +280,15 @@ int STARCH_IMPL(upsample12, neon) (const int16_t * restrict in, int len, int shi
        mc[c] = vld1_s16(mc4[c]);
    }
 
+#ifdef __aarch64__
    // 8 windows at a time for each phase, a block at a time so the outputs
    // can be put in order then split into the 6 phases with vector loads/stores
    for (; n + UPSAMPLE_BLOCK <= nw; n += UPSAMPLE_BLOCK) {
        uint16_t tmp[5 * UPSAMPLE_BLOCK] __attribute__((aligned(16))); // tmp[o - 5*n]
 
        for (int w = 0; w < UPSAMPLE_BLOCK; w += 8) {
-           const int16_t * restrict p = in + 2 * (n + w);
-           int16x8x2_t s[8];
-           for (int k = 0; k < 8; k++)
-               s[k] = vld2q_s16(p + 2 * k);
-
            uint16x8_t ph[5];
-           if (mirrored) {
-               upsample_mirror8_neon(s, pc, mc, shift, ph);
-           } else {
-               for (int c = 0; c < 5; c++)
-                   ph[c] = upsample_phase8_neon(s, upsample_coeffs[c], shift);
-           }
-
+           upsample8_neon(in + 2 * (n + w), mirrored, pc, mc, shift, ph);
            interleave5_u16x8_neon(ph, tmp + 5 * w);
        }
 
@@ -304,6 +304,46 @@ int STARCH_IMPL(upsample12, neon) (const int16_t * restrict in, int len, int shi
            }
        }
    }
+#else
+   // ARMv7 has no 16-byte table lookup, so store each output straight to its phase row.
+   // Group g of 8 windows makes outputs 40g..40g+39; output o goes to row o % 6 from lane
+   // o / 5 - 8g of phase o % 5, and a row's outputs in a group are consecutive columns,
+   // so each row pointer just steps on. The pattern repeats every 3 groups (24 windows,
+   // 20 columns per row)
+   uint16_t *rp[6];
+   for (int r = 0; r < 6; r++)
+       rp[r] = oo + r * stride;
+
+#define ST(r, c, j) vst1q_lane_u16(rp[r]++, ph[c], j)
+   for (; n + 24 <= nw; n += 24) {
+       uint16x8_t ph[5];
+
+       upsample8_neon(in + 2 * n, mirrored, pc, mc, shift, ph);
+       ST(0, 0, 0); ST(0, 1, 1); ST(0, 2, 2); ST(0, 3, 3); ST(0, 4, 4); ST(0, 0, 6); ST(0, 1, 7);
+       ST(1, 1, 0); ST(1, 2, 1); ST(1, 3, 2); ST(1, 4, 3); ST(1, 0, 5); ST(1, 1, 6); ST(1, 2, 7);
+       ST(2, 2, 0); ST(2, 3, 1); ST(2, 4, 2); ST(2, 0, 4); ST(2, 1, 5); ST(2, 2, 6); ST(2, 3, 7);
+       ST(3, 3, 0); ST(3, 4, 1); ST(3, 0, 3); ST(3, 1, 4); ST(3, 2, 5); ST(3, 3, 6); ST(3, 4, 7);
+       ST(4, 4, 0); ST(4, 0, 2); ST(4, 1, 3); ST(4, 2, 4); ST(4, 3, 5); ST(4, 4, 6);
+       ST(5, 0, 1); ST(5, 1, 2); ST(5, 2, 3); ST(5, 3, 4); ST(5, 4, 5); ST(5, 0, 7);
+
+       upsample8_neon(in + 2 * (n + 8), mirrored, pc, mc, shift, ph);
+       ST(0, 2, 0); ST(0, 3, 1); ST(0, 4, 2); ST(0, 0, 4); ST(0, 1, 5); ST(0, 2, 6); ST(0, 3, 7);
+       ST(1, 3, 0); ST(1, 4, 1); ST(1, 0, 3); ST(1, 1, 4); ST(1, 2, 5); ST(1, 3, 6); ST(1, 4, 7);
+       ST(2, 4, 0); ST(2, 0, 2); ST(2, 1, 3); ST(2, 2, 4); ST(2, 3, 5); ST(2, 4, 6);
+       ST(3, 0, 1); ST(3, 1, 2); ST(3, 2, 3); ST(3, 3, 4); ST(3, 4, 5); ST(3, 0, 7);
+       ST(4, 0, 0); ST(4, 1, 1); ST(4, 2, 2); ST(4, 3, 3); ST(4, 4, 4); ST(4, 0, 6); ST(4, 1, 7);
+       ST(5, 1, 0); ST(5, 2, 1); ST(5, 3, 2); ST(5, 4, 3); ST(5, 0, 5); ST(5, 1, 6); ST(5, 2, 7);
+
+       upsample8_neon(in + 2 * (n + 16), mirrored, pc, mc, shift, ph);
+       ST(0, 4, 0); ST(0, 0, 2); ST(0, 1, 3); ST(0, 2, 4); ST(0, 3, 5); ST(0, 4, 6);
+       ST(1, 0, 1); ST(1, 1, 2); ST(1, 2, 3); ST(1, 3, 4); ST(1, 4, 5); ST(1, 0, 7);
+       ST(2, 0, 0); ST(2, 1, 1); ST(2, 2, 2); ST(2, 3, 3); ST(2, 4, 4); ST(2, 0, 6); ST(2, 1, 7);
+       ST(3, 1, 0); ST(3, 2, 1); ST(3, 3, 2); ST(3, 4, 3); ST(3, 0, 5); ST(3, 1, 6); ST(3, 2, 7);
+       ST(4, 2, 0); ST(4, 3, 1); ST(4, 4, 2); ST(4, 0, 4); ST(4, 1, 5); ST(4, 2, 6); ST(4, 3, 7);
+       ST(5, 3, 0); ST(5, 4, 1); ST(5, 0, 3); ST(5, 1, 4); ST(5, 2, 5); ST(5, 3, 6); ST(5, 4, 7);
+   }
+#undef ST
+#endif
 
    // Remainder
    for (; n < nw; n++) {
@@ -345,12 +385,7 @@ uint32x4_t div_u32x4_neon(const uint32x4_t n, const uint32x4_t d)
 static inline __attribute__((always_inline))
 uint8_t preamble_metric1(const uint16_t * restrict p, unsigned thres)
 {
-#ifdef PREAMBLE_MIN_PULSE
     uint32_t minp = MIN(MIN(p[0], p[2]), MIN(p[7], p[9]));
-#endif
-#ifdef PREAMBLE_SUM_PULSE
-    uint32_t minp = p[0] + p[2] + p[7] + p[9];
-#endif
     uint32_t gap = p[1] + p[3] + p[4] + p[5] + p[6] + p[8] +
                    p[10] + p[11] + p[12] + p[13] + p[14] + p[15];
 
@@ -361,18 +396,33 @@ uint8_t preamble_metric1(const uint16_t * restrict p, unsigned thres)
 
 #define PREAMBLE_BLOCK 64 // Positions per phase per block, multiple of 8
 
-// Widened sum of 4 consecutive samples, p[0..3] .. p[7..10]
+// Saturating 16-bit sum of 4 consecutive samples, p[0..3] .. p[7..10]
 static inline __attribute__((always_inline))
-uint32x4x2_t sum4_u16x8_neon(const uint16_t * restrict p)
+uint16x8_t sum4s_u16x8_neon(const uint16_t * restrict p)
 {
-    const uint16x8_t a = vld1q_u16(p + 0), b = vld1q_u16(p + 1);
-    const uint16x8_t c = vld1q_u16(p + 2), d = vld1q_u16(p + 3);
-    uint32x4x2_t s;
-    s.val[0] = vaddq_u32(vaddl_u16(vget_low_u16(a), vget_low_u16(b)),
-                         vaddl_u16(vget_low_u16(c), vget_low_u16(d)));
-    s.val[1] = vaddq_u32(vaddl_u16(vget_high_u16(a), vget_high_u16(b)),
-                         vaddl_u16(vget_high_u16(c), vget_high_u16(d)));
-    return s;
+    return vqaddq_u16(vqaddq_u16(vld1q_u16(p + 0), vld1q_u16(p + 1)),
+                      vqaddq_u16(vld1q_u16(p + 2), vld1q_u16(p + 3)));
+}
+
+// Exact metrics of the 8 positions at p (some of which may pass thres)
+static inline __attribute__((always_inline))
+uint8x8_t preamble_metric8_neon(const uint16_t * restrict p, const uint16x8_t m, const uint32x4_t vthres)
+{
+    static const int go[12] = { 1, 3, 4, 5, 6, 8, 10, 11, 12, 13, 14, 15 };
+    uint32x4_t d_lo = vaddw_u16(vdupq_n_u32(1), vget_low_u16(m));
+    uint32x4_t d_hi = vaddw_u16(vdupq_n_u32(1), vget_high_u16(m));
+    for (int q = 0; q < 12; q++) {
+        const uint16x8_t x = vld1q_u16(p + go[q]);
+        d_lo = vaddw_u16(d_lo, vget_low_u16(x));
+        d_hi = vaddw_u16(d_hi, vget_high_u16(x));
+    }
+    const uint32x4_t n_lo = vshll_n_u16(vget_low_u16(m), 8);
+    const uint32x4_t n_hi = vshll_n_u16(vget_high_u16(m), 8);
+    const uint32x4_t ok_lo = vcgeq_u32(n_lo, vmulq_u32(d_lo, vthres));
+    const uint32x4_t ok_hi = vcgeq_u32(n_hi, vmulq_u32(d_hi, vthres));
+    const uint32x4_t q_lo = vandq_u32(div_u32x4_neon(n_lo, d_lo), ok_lo);
+    const uint32x4_t q_hi = vandq_u32(div_u32x4_neon(n_hi, d_hi), ok_hi);
+    return vmovn_u16(vcombine_u16(vmovn_u32(q_lo), vmovn_u32(q_hi)));   // metric < 256
 }
 
 // Preamble metrics for 8*n8 consecutive positions of one phase
@@ -383,51 +433,30 @@ void preamble_metric_block_neon(const uint16_t * restrict p, int n8, unsigned th
     // P G P G, G G G P, G P G G, G G G G
     // gap = p[1] + p[8] + p[10] + p[15] + s4[3] + s4[11], s4[x] = p[x] + .. + p[x+3]
     // s4[11] for these 8 positions is s4[3] for the next 8
+    //
+    // metric >= thres <=> 256 * minp >= thres * (minp + gap + 1)
+    //                 <=> minp * (256 - thres) >= thres * (gap + 1)
+    // Most positions fail. The test is done with the gap summed in saturating 16-bit
+    // lanes: it can only come out too small, so a position may pass wrongly but is
+    // never rejected wrongly, and those that pass get the exact metric
 
-    const uint32x4_t one = vdupq_n_u32(1);
+    const uint16x8_t one = vdupq_n_u16(1);
     const uint32x4_t vthres = vdupq_n_u32(thres);
-    uint32x4x2_t s4a = sum4_u16x8_neon(p + 3);
+    const uint16_t lw = (uint16_t) (256 - thres), rw = (uint16_t) thres;
+    uint16x8_t s4a = sum4s_u16x8_neon(p + 3);
 
     for (int k = 0; k < 8 * n8; k += 8, p += 8) {
-        const uint32x4x2_t s4b = sum4_u16x8_neon(p + 11);
-
-        const uint16x8_t v1 = vld1q_u16(p + 1), v8 = vld1q_u16(p + 8);
-        const uint16x8_t v10 = vld1q_u16(p + 10), v15 = vld1q_u16(p + 15);
-
-        uint32x4_t gap_lo = vaddq_u32(vaddl_u16(vget_low_u16(v1), vget_low_u16(v8)),
-                                      vaddl_u16(vget_low_u16(v10), vget_low_u16(v15)));
-        uint32x4_t gap_hi = vaddq_u32(vaddl_u16(vget_high_u16(v1), vget_high_u16(v8)),
-                                      vaddl_u16(vget_high_u16(v10), vget_high_u16(v15)));
-        gap_lo = vaddq_u32(vaddq_u32(gap_lo, one), vaddq_u32(s4a.val[0], s4b.val[0]));
-        gap_hi = vaddq_u32(vaddq_u32(gap_hi, one), vaddq_u32(s4a.val[1], s4b.val[1]));
+        const uint16x8_t s4b = sum4s_u16x8_neon(p + 11);
+        const uint16x8_t g1 = vqaddq_u16(vqaddq_u16(vqaddq_u16(vld1q_u16(p + 1), vld1q_u16(p + 8)),
+                                                    vqaddq_u16(vld1q_u16(p + 10), vld1q_u16(p + 15))),
+                                         vqaddq_u16(vqaddq_u16(s4a, s4b), one));     // gap + 1, saturated
         s4a = s4b;
 
-        // Metric = n / d = (256 * minp) / (minp + gap + 1), or 0 if below thres
-#ifdef PREAMBLE_MIN_PULSE
         const uint16x8_t m = vminq_u16(vminq_u16(vld1q_u16(p + 0), vld1q_u16(p + 2)),
                                        vminq_u16(vld1q_u16(p + 7), vld1q_u16(p + 9)));
-        const uint32x4_t n_lo = vshll_n_u16(vget_low_u16(m), 8);
-        const uint32x4_t n_hi = vshll_n_u16(vget_high_u16(m), 8);
-        const uint32x4_t d_lo = vaddw_u16(gap_lo, vget_low_u16(m));
-        const uint32x4_t d_hi = vaddw_u16(gap_hi, vget_high_u16(m));
-#endif
-#ifdef PREAMBLE_SUM_PULSE
-        const uint16x8_t v0 = vld1q_u16(p + 0), v2 = vld1q_u16(p + 2);
-        const uint16x8_t v7 = vld1q_u16(p + 7), v9 = vld1q_u16(p + 9);
-        const uint32x4_t m_lo = vaddq_u32(vaddl_u16(vget_low_u16(v0), vget_low_u16(v2)),
-                                          vaddl_u16(vget_low_u16(v7), vget_low_u16(v9)));
-        const uint32x4_t m_hi = vaddq_u32(vaddl_u16(vget_high_u16(v0), vget_high_u16(v2)),
-                                          vaddl_u16(vget_high_u16(v7), vget_high_u16(v9)));
-        const uint32x4_t n_lo = vshlq_n_u32(m_lo, 8);
-        const uint32x4_t n_hi = vshlq_n_u32(m_hi, 8);
-        const uint32x4_t d_lo = vaddq_u32(gap_lo, m_lo);
-        const uint32x4_t d_hi = vaddq_u32(gap_hi, m_hi);
-#endif
-
-        // Most positions are noise below the threshold: skip the divide when all 8 are
-        const uint32x4_t ok_lo = vcgeq_u32(n_lo, vmulq_u32(d_lo, vthres));
-        const uint32x4_t ok_hi = vcgeq_u32(n_hi, vmulq_u32(d_hi, vthres));
-        const uint32x4_t any = vorrq_u32(ok_lo, ok_hi);
+        const uint32x4_t pass_lo = vcgeq_u32(vmull_n_u16(vget_low_u16(m), lw), vmull_n_u16(vget_low_u16(g1), rw));
+        const uint32x4_t pass_hi = vcgeq_u32(vmull_n_u16(vget_high_u16(m), lw), vmull_n_u16(vget_high_u16(g1), rw));
+        const uint32x4_t any = vorrq_u32(pass_lo, pass_hi);
 #ifdef __aarch64__
         if (vmaxvq_u32(any) == 0) {
 #else
@@ -436,11 +465,7 @@ void preamble_metric_block_neon(const uint16_t * restrict p, int n8, unsigned th
             vst1_u8(out + k, vdup_n_u8(0));
             continue;
         }
-        const uint32x4_t q_lo = vandq_u32(div_u32x4_neon(n_lo, d_lo), ok_lo);
-        const uint32x4_t q_hi = vandq_u32(div_u32x4_neon(n_hi, d_hi), ok_hi);
-
-        // Metric < 256
-        vst1_u8(out + k, vmovn_u16(vcombine_u16(vmovn_u32(q_lo), vmovn_u32(q_hi))));
+        vst1_u8(out + k, preamble_metric8_neon(p, m, vthres));
     }
 }
 
@@ -703,61 +728,44 @@ void coh_rot_neon(int16x8_t xr, int16x8_t xi, int16x8_t pr, int16x8_t pi, int16x
     *ri = vaddq_s16(vqrdmulhq_s16(xr, pi), vqrdmulhq_s16(xi, pr));
 }
 
-#ifdef __aarch64__
 // One chip's partial sums, I/Q kept interleaved: 8 complex taps loaded as they are and
 // multiplied by the interleaved coefficients [c0, c0, c1, c1, ..] (ci[0] taps 0..3,
-// ci[1] taps 4..7), giving lanes [I, Q, I, Q] (each I and Q split over two lanes)
+// ci[1] taps 4..7), giving lanes [I, Q, I, Q] (each I and Q split over two lanes).
+// The 5 tap sets alternate with the chip because 6k mod 5 = k mod 5
 static inline __attribute__((always_inline))
 int32x4_t coh_chip_partial_neon(const int16_t *iq, int t, const int16x8_t (*ci)[2])
 {
     const int n = t / 5, c = t % 5;
     const int16x8_t v0 = vld1q_s16(iq + 2 * n), v1 = vld1q_s16(iq + 2 * n + 8);
     int32x4_t s = vmull_s16(vget_low_s16(v0), vget_low_s16(ci[c][0]));
-    s = vmlal_high_s16(s, v0, ci[c][0]);
+    s = vmlal_s16(s, vget_high_s16(v0), vget_high_s16(ci[c][0]));
     s = vmlal_s16(s, vget_low_s16(v1), vget_low_s16(ci[c][1]));
-    return vmlal_high_s16(s, v1, ci[c][1]);
+    return vmlal_s16(s, vget_high_s16(v1), vget_high_s16(ci[c][1]));
 }
-#else
-// One chip: 8 taps of interleaved I/Q at 12 MHz position t (vld2 splits I and Q;
-// the 5 tap sets alternate with the chip because 6k mod 5 = k mod 5)
-static inline __attribute__((always_inline))
-void coh_chip_neon(const int16_t *iq, int t, const int16x8_t *cv, int32_t *re, int32_t *im)
-{
-    const int n = t / 5, c = t % 5;
-    const int16x8x2_t v = vld2q_s16(iq + 2 * n);
-    int32x4_t si = vmull_s16(vget_low_s16(v.val[0]), vget_low_s16(cv[c]));
-    int32x4_t sq = vmull_s16(vget_low_s16(v.val[1]), vget_low_s16(cv[c]));
-    si = vmlal_s16(si, vget_high_s16(v.val[0]), vget_high_s16(cv[c]));
-    sq = vmlal_s16(sq, vget_high_s16(v.val[1]), vget_high_s16(cv[c]));
-    *re = coh_hsum_s32_neon(si);
-    *im = coh_hsum_s32_neon(sq);
-}
-#endif
 
 // Chips of bits 0 .. n-1 (n even), int32 I/Q interleaved, in chip order
 // (a, b of each bit): c32[2k] = I, c32[2k+1] = Q of chip k
 static void coh_chips32_neon(const int16_t *iq, int pos, int n, const int16x8_t *cv,
                              const int16x8_t (*ci)[2], int32_t *c32)
 {
-#ifdef __aarch64__
-    // Two chips at a time: the 64-bit halves of their partial sums, zipped and added,
-    // give [I0, Q0, I1, Q1] directly in the interleaved layout
+    // Two chips at a time: the 64-bit halves of their partial sums, paired and added,
+    // give [I0, Q0, I1, Q1] directly in the interleaved layout, with no moves out of
+    // the NEON registers (which stall an in-order core such as the Cortex-A53)
     (void) cv;
     for (int k = 0; k < 2 * n; k += 4) {
         const int t = pos + COH_DATA_OFFSET + 6 * k;
         const int32x4_t s0 = coh_chip_partial_neon(iq, t, ci), s1 = coh_chip_partial_neon(iq, t + 6, ci);
         const int32x4_t s2 = coh_chip_partial_neon(iq, t + 12, ci), s3 = coh_chip_partial_neon(iq, t + 18, ci);
+#ifdef __aarch64__
 #define COH_FOLD(a, b) vaddq_s32(vreinterpretq_s32_s64(vzip1q_s64(vreinterpretq_s64_s32(a), vreinterpretq_s64_s32(b))), \
                                  vreinterpretq_s32_s64(vzip2q_s64(vreinterpretq_s64_s32(a), vreinterpretq_s64_s32(b))))
+#else
+#define COH_FOLD(a, b) vaddq_s32(vcombine_s32(vget_low_s32(a), vget_low_s32(b)), vcombine_s32(vget_high_s32(a), vget_high_s32(b)))
+#endif
         vst1q_s32(c32 + 2 * k, COH_FOLD(s0, s1));
         vst1q_s32(c32 + 2 * k + 4, COH_FOLD(s2, s3));
 #undef COH_FOLD
     }
-#else
-    (void) ci;
-    for (int k = 0; k < 2 * n; k++)
-        coh_chip_neon(iq, pos + COH_DATA_OFFSET + 6 * k, cv, &c32[2 * k], &c32[2 * k + 1]);
-#endif
 }
 
 // int32 chips of bits 0 .. n-1 -> int16 a/b (shift, clamp), 4 bits at a time

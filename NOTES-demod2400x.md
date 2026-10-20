@@ -72,6 +72,8 @@ RTL-SDR capture decoded on a Raspberry Pi 5 unless stated otherwise.
 | `decode_bits` starch kernel | Called 5 times per candidate, ~2M candidates a minute | 82 → 26 ns per call; demod 4.8 → 4.3 s |
 | Adaptive gain fed | It was not called at all by the new demodulator | Same gain decisions as stock |
 | Signal power capped at full scale | Clipped frames reported up to +1.1 dBFS | RSSI matches stock (mean +0.01 dB, σ 0.2 dB) |
+| ARMv7 NEON: no moves out of NEON registers in the hot paths | The in-order Cortex-A53 stalls on them. `upsample12` stores each output straight to its phase row (single-lane stores, row pointers stepping on; the pattern repeats every 24 windows) instead of a scalar 5-way interleave through a buffer; `coherent_decode` uses the AArch64 chip method (I/Q interleaved, chip pairs folded) instead of two horizontal sums per chip | Pi 3B: `upsample12` 11.42 → 10.27 ms, `coherent_decode` 11.8 → 10.1 µs (5.5 → 4.7 at the gate); with the next row, a 20 s decode 11.95 → 11.41 s (−4.5%), same messages and aircraft. AArch64 unchanged |
+| `locate_preamble` NEON: threshold test in 16-bit lanes | minp·(256 − T) ≥ T·(gap + 1) with the gap summed in saturating 16-bit adds can only pass wrongly, never reject wrongly; the few blocks that pass get the exact 32-bit metric, so the output is still bit-exact | At threshold 50: Pi 5 1.14 → 1.03 ms, Pi 3B 10.69 → 10.13 ms; threshold 0 (everything passes) is slower, 1.58 → 2.37 ms |
 | Preamble metric without the factor 2 on `minp` (`PREAMBLE_KK`), `PEAMBLE_THRES` 50 → 28 | Both test the same ratio `minp / (gap + 1)`, so only the threshold changes (50 ≙ 27.7); one multiply less | Candidates −7% (RTL-SDR), −9% (SDRplay); messages −0.1%, +0.07%, same aircraft; CPU −2.9%, −3.1% on the Pi 5. Threshold 24 gave the SDRplay a 26th aircraft |
 | Upsampler square root within ±1 (no exact fix-ups) | Only the benchmark needed exact magnitudes | `upsample12` −10.7% on the Pi 3B (ARMv7), −6% on the Pi 5; CPU −2.8% (RTL-SDR), −3.0% (SDRplay) on the Pi 5; same aircraft and positions, messages ±1 |
 | Demodulate in 32768-sample pieces (`DEMOD_BLOCK`) | The 12 MHz data for a whole FIFO buffer is 1.3 MB; a piece's fits in L2 between upsample, preamble search and decodes. Done inside `demodulate2400x()`, as the drivers need the FIFO buffers to stay the size of their transfers | Output byte-identical; CPU −4.4% (RTL-SDR), −8.4% (SDRplay) on the Pi 5 |
@@ -135,6 +137,12 @@ exception:
     only add energy): up to +3.3% messages on the SDRplay, none on the
     RTL-SDR, and the detector costs ~30% more. Fewer candidates save little
     (~0.4 µs each), so no CPU gain without losing messages.
+* **ARMv7 `decode_bits` with the bytes reduced together** (8 bytes narrowed
+  to 8-bit lanes and summed with `vpadd`, one store): faster for long runs
+  but 303 → 320 ns for the 7 bytes actually decoded.
+* **ARMv7 `vtbl4` for the upsampler's 5-way interleave**: only 0.2 ms of
+  the 1.37 ms the scalar interleave costs (a 4-register `vtbl` is about 8
+  cycles on the Cortex-A53); storing straight to the rows replaced it.
 * **Soft-decision bit flipping** (flip the weakest bits when the CRC fails):
   `--fix` already repairs any single bit, so this only helps 2-bit errors,
   at a false-decode risk. Not pursued.
@@ -238,8 +246,15 @@ Kernel times on the Pi 3B (NEON) against the Pi 5 (aarch64 NEON):
 | Kernel | Pi 3B | Pi 5 |
 |---|---|---|
 | `upsample12` | 12.8 ms | 1.54 ms |
-| `locate_preamble` | 15.6 / 10.5 ms | 1.64 / 1.22 ms |
+| `locate_preamble` (threshold 0 / 50) | 15.6 / 10.5 ms | 1.64 / 1.22 ms |
 | `coherent_decode` (full / stopped at the gate) | 11.8 / 5.5 µs | 1.80 / 0.81 µs |
+
+With the square root within ±1 and the ARMv7 changes in "Decisions and why":
+`upsample12` 10.27 ms (Pi 5 1.49 ms); `locate_preamble` 20.0 / 10.1 ms (Pi 5
+2.37 / 1.03 ms; threshold 0 is slower because every block takes the exact
+path, which decoding never does); `coherent_decode` 10.1 / 4.7 µs (Pi 5
+unchanged). A 20 s decode of the first 20 s of the Pi 4 capture (threshold 28)
+takes 11.4 s, 57% of one core.
 
 So a Pi 3B can run it live, at roughly 65–70% of one core once USB input and
 the rest are added (on the Pi 4 they add about 4 points). The upsampler and

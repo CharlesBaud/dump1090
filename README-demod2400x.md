@@ -30,6 +30,16 @@ The heavy kernels (`iqdata_conv_*`, `upsample12`, `locate_preamble`,
 and x86 AVX2 versions. All versions give bit-identical results, which
 `starch-benchmark -V` checks, including on full-range worst-case input.
 
+## Installing over a dump1090-fa package
+
+On a system with the dump1090-fa package (PiAware, or the FlightAware .deb),
+build with `make`, then `sudo sh install-2400x-dev.sh`. It copies the build to
+`/usr/local/bin/dump1090-2400x` and adds a systemd override so the dump1090-fa
+service runs it with the same settings (`/etc/default/dump1090-fa`, PiAware
+location, user, JSON directory); the packaged files are not changed. Run it
+again after a new build; `sudo sh uninstall-2400x-dev.sh` goes back to the
+packaged decoder installed by apt-get.
+
 ## Results
 
 A 60 s capture from a Raspberry Pi 4 with a FlightAware Pro Stick Plus

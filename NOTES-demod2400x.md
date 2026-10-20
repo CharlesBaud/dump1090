@@ -121,6 +121,37 @@ Generic is the reference; NEON and AVX2 must match it exactly, which
 * Adaptive gain with `--ifile` needs a gain table; for testing, a fake R820T
   table was patched into a scratch copy of `sdr.c` (not committed).
 
+## Raspberry Pi 3B
+
+A Pi 3 Model B (Rev 1.2, Cortex-A53 at 1.2 GHz) running Volumio, a 32-bit OS,
+so the ARMv7 NEON kernels. Static ARMv7 builds of the dev branch, decoding
+the first 20 s of the Pi 4 capture (`--fix`); the messages are identical to
+the Pi 5's.
+
+| Build | Messages | Demodulation per 20 s | One core |
+|---|---|---|---|
+| Stock | 24,345 | 2.8 s | 14% |
+| DEMOD_2400X | 28,051 | 10.9 s | 54% |
+| DEMOD_2400X + coherent | 30,974 | 12.6 s | 63% |
+
+Kernel times on the Pi 3B (NEON) against the Pi 5 (aarch64 NEON):
+
+| Kernel | Pi 3B | Pi 5 |
+|---|---|---|
+| `upsample12` | 12.8 ms | 1.54 ms |
+| `locate_preamble` | 15.6 / 10.5 ms | 1.64 / 1.22 ms |
+| `coherent_decode` (full / stopped at the gate) | 12.2 / 5.7 µs | 1.85 / 0.85 µs |
+
+So a Pi 3B can run it live, at roughly 65–70% of one core once USB input and
+the rest are added (on the Pi 4 they add about 4 points). The upsampler and
+preamble search, about 80% of it, cost the same whatever the traffic. The
+risk is thermal throttling: at 600 MHz it could not keep up, so a heatsink
+is advisable. Without the coherent pass it is about 54%.
+
+The static `dump1090` for ARMv7 needs `-lncurses`, which the cross-compiler
+doesn't have; ncurses is only used by interactive mode, so the test build
+linked a stub library (not committed).
+
 ## Gotchas
 
 * `dsp/generated/*.o` don't depend on `dsp/helpers/*.h`. After a header edit,
@@ -139,8 +170,8 @@ Generic is the reference; NEON and AVX2 must match it exactly, which
 ## Possible next steps
 
 * Coherent demodulation as a fallback when magnitude demodulation fails,
-  reusing the I/Q kept in the FIFO: done on branch `demod-2400x-coherent`,
-  see [COHERENT-demod2400x.md](COHERENT-demod2400x.md).
+  reusing the I/Q kept in the FIFO: done (`-DDEMOD_2400X_COHERENT`), see
+  [COHERENT-demod2400x.md](COHERENT-demod2400x.md).
 * An early DF check before decoding the second half and scoring.
 * Real x86 timings for `wisdom.x86` (`decode_bits` and `coherent_decode`
   orders are provisional).

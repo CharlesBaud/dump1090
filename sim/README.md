@@ -18,6 +18,6 @@ Example, 2000 weak frames with a random +-100 kHz carrier offset:
 ../dump1090 --ifile weak.sc16 --iformat SC16 --raw --mlat | python3 tscheck.py /dev/stdin
 ```
 
-Coherent second pass (branch `demod-2400x-coherent`): `coh_samples.py`,
+Coherent second pass (`-DDEMOD_2400X_COHERENT`): `coh_samples.py`,
 `coh_acq.py`, `coh_larger.py`, `coh_seg.py`, `coh_snr.py`, `coh_judge.py` and `coh_tables.py`, described in
 [COHERENT-demod2400x.md](../COHERENT-demod2400x.md).

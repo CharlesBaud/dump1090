@@ -6,9 +6,9 @@ decoder throws away, to recover some of those frames. On the 60 s Pi 4
 RTL-SDR capture it adds about 11% more messages (84,389 → 93,420) for about
 20% more demodulation CPU.
 
-Branch: `demod-2400x-coherent` (built on `demod-2400x`). Switched on at build
-time by `-DDEMOD_2400X_COHERENT` in the Makefile; without it the decoder is
-byte-for-byte the same as `demod-2400x`.
+Branch: `demod-2400x-dev` (developed on `demod-2400x-coherent`). Switched on
+at build time by `-DDEMOD_2400X_COHERENT` in the Makefile; without it the
+decoder is byte-for-byte plain DEMOD_2400X.
 
 ## Why it can help
 
@@ -234,6 +234,7 @@ implementations that give bit-identical results:
 | NEON, aarch64 (Pi 5) | 1.85 µs | 0.85 µs |
 | NEON, ARMv7 (Pi 5, 32-bit) | 2.5 µs | 1.16 µs |
 | NEON, aarch64 (Pi 4) | not yet remeasured (2.9 µs with one estimate) | 1.58 µs |
+| NEON, ARMv7 (Pi 3B, 32-bit) | 12.2 µs | 5.7 µs |
 | AVX2 | checked under QEMU only, not yet timed | |
 
 Most frames stop at the gate, so the cost is dominated by the first half:

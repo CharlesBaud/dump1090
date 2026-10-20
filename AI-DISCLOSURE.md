@@ -1,6 +1,7 @@
 # Use of generative AI on this branch
 
-This branch (`demod-2400x`, and `demod-2400x-coherent` built on it) contains
+This branch (`demod-2400x-dev`, which carries the work of `demod-2400x` and
+`demod-2400x-coherent` over to upstream `dev`) contains
 code and text written with Claude Code (Anthropic, Claude Opus models),
 working under my direction.
 
@@ -24,7 +25,7 @@ NEON `upsample12` and the DC removal in the input converters
 (`3a7afd3`, `5a51c13`, `d70f5d4`, `0f244bc`). The `sim/` tools,
 README-demod2400x.md and this file were also written with Claude Code.
 
-The coherent second pass (`demod-2400x-coherent`) follows my specification:
+The coherent second pass (`-DDEMOD_2400X_COHERENT`) follows my specification:
 a separate file called from `emitFrame()` for frames the magnitude bits
 don't decode, the frequency and phase estimated for each 56-bit half on its
 own (and the second half decoded whatever the DF says), a

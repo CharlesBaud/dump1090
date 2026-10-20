@@ -1,8 +1,9 @@
 # DEMOD_2400X demodulator
 
-This branch adds a new Mode S demodulator for 2.4 MHz SDR input
-(`demod_2400x.c`, enabled with `-DDEMOD_2400X -DUSE_MAGNITUDE` in the
-Makefile; the build reports version `11.1x`). On this branch an optional
+This branch (`demod-2400x-dev`, based on upstream `dev`) adds a new Mode S
+demodulator for 2.4 MHz SDR input (`demod_2400x.c`, enabled with
+`-DDEMOD_2400X -DUSE_MAGNITUDE` in the Makefile; the build reports version
+`11.1x` unless `DUMP1090_VERSION` is set). An optional
 coherent second pass (`-DDEMOD_2400X_COHERENT`) rescues frames that fail the
 CRC; see [COHERENT-demod2400x.md](COHERENT-demod2400x.md). In outline:
 
@@ -95,9 +96,13 @@ Demodulation time for the 60 s capture:
 |---|---|---|---|
 | Raspberry Pi 5 (Cortex-A76) | 2.0 s | 4.3 s (gcc 14), 4.1 s (clang 19) | about 0.8 s more |
 | Raspberry Pi 4 (Cortex-A72) | 3.9 s | 10.6 s | not measured yet |
+| Raspberry Pi 3B (Cortex-A53, 32-bit) | 8.5 s | 32.6 s | 37.9 s |
 
 The Pi 4 times were measured while the live receiver was also running on
-the same Pi, so both are probably slightly high. Live on the Pi 4 this is
+the same Pi, so both are probably slightly high. The Pi 3B times are for the
+first 20 s of the capture, times 3; on a Pi 3B the coherent build uses about
+63% of one core for demodulation (see
+[NOTES-demod2400x.md](NOTES-demod2400x.md#raspberry-pi-3b)). Live on the Pi 4 this is
 about 31% of one core. These results come from
 one receiver and a one-minute capture; longer side-by-side runs are in
 progress.

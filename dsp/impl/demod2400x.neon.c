@@ -196,6 +196,33 @@ void interleave5_u8x8_neon(const uint8x8_t * restrict ph, uint8_t * restrict out
     for (int v = 0; v < 3; v++)
         vst1q_u8(out + 16 * v, vqtbl3q_u8(t, vld1q_u8(interleave5_u8_tbl[v])));
 }
+#else
+// out[5*w + c] = ph[c][w], w = 0..7 (writes 43 bytes, 40 used). ARMv7 has no 16-byte table
+// lookup, so a partial transpose: vtrn.8 then vtrn.16 give [c0 c1 c2 c3] of windows k and
+// k + 4 in one register; ph[4] shifted by 8k (as 32-bit lanes) puts c4 of the same windows at
+// bytes 0 and 4, and vtrn.32 joins them into [c0 c1 c2 c3 c4 . . .] for each window. Each
+// window's 8 bytes are stored at out + 5w in order, overwriting the previous one's 3 spare bytes
+static inline __attribute__((always_inline))
+void interleave5_u8x8_neon(const uint8x8_t * restrict ph, uint8_t * restrict out)
+{
+    const uint8x8x2_t x = vtrn_u8(ph[0], ph[1]);           // (c0, c1) of windows 0 2 4 6 / 1 3 5 7
+    const uint8x8x2_t y = vtrn_u8(ph[2], ph[3]);           // (c2, c3)
+    const uint16x4x2_t e = vtrn_u16(vreinterpret_u16_u8(x.val[0]), vreinterpret_u16_u8(y.val[0]));  // w 0|4, 2|6
+    const uint16x4x2_t o = vtrn_u16(vreinterpret_u16_u8(x.val[1]), vreinterpret_u16_u8(y.val[1]));  // w 1|5, 3|7
+    const uint32x2_t c4 = vreinterpret_u32_u8(ph[4]);
+    const uint32x2x2_t w0 = vtrn_u32(vreinterpret_u32_u16(e.val[0]), c4);                   // windows 0, 4
+    const uint32x2x2_t w1 = vtrn_u32(vreinterpret_u32_u16(o.val[0]), vshr_n_u32(c4, 8));    // 1, 5
+    const uint32x2x2_t w2 = vtrn_u32(vreinterpret_u32_u16(e.val[1]), vshr_n_u32(c4, 16));   // 2, 6
+    const uint32x2x2_t w3 = vtrn_u32(vreinterpret_u32_u16(o.val[1]), vshr_n_u32(c4, 24));   // 3, 7
+    vst1_u8(out +  0, vreinterpret_u8_u32(w0.val[0]));
+    vst1_u8(out +  5, vreinterpret_u8_u32(w1.val[0]));
+    vst1_u8(out + 10, vreinterpret_u8_u32(w2.val[0]));
+    vst1_u8(out + 15, vreinterpret_u8_u32(w3.val[0]));
+    vst1_u8(out + 20, vreinterpret_u8_u32(w0.val[1]));
+    vst1_u8(out + 25, vreinterpret_u8_u32(w1.val[1]));
+    vst1_u8(out + 30, vreinterpret_u8_u32(w2.val[1]));
+    vst1_u8(out + 35, vreinterpret_u8_u32(w3.val[1]));
+}
 #endif
 
 // All 5 phases for the 8 windows at in[2 * (0..14)]
@@ -237,7 +264,6 @@ int STARCH_IMPL(upsample12, neon) (const int16_t * restrict in, int len, uint8_t
        mc[c] = vld1_s16(mc4[c]);
    }
 
-#ifdef __aarch64__
    // 8 windows at a time for each phase, a block at a time so the outputs
    // can be put in order then split into the 6 phases with vector loads/stores
    for (; n + UPSAMPLE_BLOCK <= nw; n += UPSAMPLE_BLOCK) {
@@ -259,46 +285,6 @@ int STARCH_IMPL(upsample12, neon) (const int16_t * restrict in, int len, uint8_t
            }
        }
    }
-#else
-   // ARMv7 has no 16-byte table lookup, so store each output straight to its phase row.
-   // Group g of 8 windows makes outputs 40g..40g+39; output o goes to row o % 6 from lane
-   // o / 5 - 8g of phase o % 5, and a row's outputs in a group are consecutive columns,
-   // so each row pointer just steps on. The pattern repeats every 3 groups (24 windows,
-   // 20 columns per row)
-   uint8_t *rp[6];
-   for (int r = 0; r < 6; r++)
-       rp[r] = oo + r * stride;
-
-#define ST(r, c, j) vst1_lane_u8(rp[r]++, ph[c], j)
-   for (; n + 24 <= nw; n += 24) {
-       uint8x8_t ph[5];
-
-       upsample8_neon(in + 2 * n, mirrored, pc, mc, ph);
-       ST(0, 0, 0); ST(0, 1, 1); ST(0, 2, 2); ST(0, 3, 3); ST(0, 4, 4); ST(0, 0, 6); ST(0, 1, 7);
-       ST(1, 1, 0); ST(1, 2, 1); ST(1, 3, 2); ST(1, 4, 3); ST(1, 0, 5); ST(1, 1, 6); ST(1, 2, 7);
-       ST(2, 2, 0); ST(2, 3, 1); ST(2, 4, 2); ST(2, 0, 4); ST(2, 1, 5); ST(2, 2, 6); ST(2, 3, 7);
-       ST(3, 3, 0); ST(3, 4, 1); ST(3, 0, 3); ST(3, 1, 4); ST(3, 2, 5); ST(3, 3, 6); ST(3, 4, 7);
-       ST(4, 4, 0); ST(4, 0, 2); ST(4, 1, 3); ST(4, 2, 4); ST(4, 3, 5); ST(4, 4, 6);
-       ST(5, 0, 1); ST(5, 1, 2); ST(5, 2, 3); ST(5, 3, 4); ST(5, 4, 5); ST(5, 0, 7);
-
-       upsample8_neon(in + 2 * (n + 8), mirrored, pc, mc, ph);
-       ST(0, 2, 0); ST(0, 3, 1); ST(0, 4, 2); ST(0, 0, 4); ST(0, 1, 5); ST(0, 2, 6); ST(0, 3, 7);
-       ST(1, 3, 0); ST(1, 4, 1); ST(1, 0, 3); ST(1, 1, 4); ST(1, 2, 5); ST(1, 3, 6); ST(1, 4, 7);
-       ST(2, 4, 0); ST(2, 0, 2); ST(2, 1, 3); ST(2, 2, 4); ST(2, 3, 5); ST(2, 4, 6);
-       ST(3, 0, 1); ST(3, 1, 2); ST(3, 2, 3); ST(3, 3, 4); ST(3, 4, 5); ST(3, 0, 7);
-       ST(4, 0, 0); ST(4, 1, 1); ST(4, 2, 2); ST(4, 3, 3); ST(4, 4, 4); ST(4, 0, 6); ST(4, 1, 7);
-       ST(5, 1, 0); ST(5, 2, 1); ST(5, 3, 2); ST(5, 4, 3); ST(5, 0, 5); ST(5, 1, 6); ST(5, 2, 7);
-
-       upsample8_neon(in + 2 * (n + 16), mirrored, pc, mc, ph);
-       ST(0, 4, 0); ST(0, 0, 2); ST(0, 1, 3); ST(0, 2, 4); ST(0, 3, 5); ST(0, 4, 6);
-       ST(1, 0, 1); ST(1, 1, 2); ST(1, 2, 3); ST(1, 3, 4); ST(1, 4, 5); ST(1, 0, 7);
-       ST(2, 0, 0); ST(2, 1, 1); ST(2, 2, 2); ST(2, 3, 3); ST(2, 4, 4); ST(2, 0, 6); ST(2, 1, 7);
-       ST(3, 1, 0); ST(3, 2, 1); ST(3, 3, 2); ST(3, 4, 3); ST(3, 0, 5); ST(3, 1, 6); ST(3, 2, 7);
-       ST(4, 2, 0); ST(4, 3, 1); ST(4, 4, 2); ST(4, 0, 4); ST(4, 1, 5); ST(4, 2, 6); ST(4, 3, 7);
-       ST(5, 3, 0); ST(5, 4, 1); ST(5, 0, 3); ST(5, 1, 4); ST(5, 2, 5); ST(5, 3, 6); ST(5, 4, 7);
-   }
-#undef ST
-#endif
 
    // Remainder
    for (; n < nw; n++) {

@@ -216,11 +216,89 @@ each period's `local` section, and `--stats` prints them too:
 * `rescued`: of those, frames whose coherent bits passed the CRC. They are
   also counted in `accepted`.
 
+## What the carriers show
+
+The coherent pass needs a steady carrier, so it gives up on about a quarter of
+aircraft: of the 122 aircraft with 30 or more frames in the 60 s RTL-SDR
+capture, 87 were coherent in over 90% of their frames, 32 in under 10%, and
+only 3 in between. To see why, the complex chips of every accepted frame were
+dumped (`COHERENT_SAMPLES`) and the carrier followed through each burst: the
+phase step from one bit's pulse to the next gives the frequency every
+microsecond, unambiguously up to ±500 kHz, far beyond the ±62 kHz the pass
+searches. Long frames with a bit SNR above 15 dB, aircraft with at least 15 of
+them; "drift" is the frequency over the last third of the burst minus the
+first third (about 74 µs apart):
+
+| Aircraft (callsign, registration, type) | Coherent frames | Offset | Spread between frames | Drift in a burst | What it is |
+|---|---|---|---|---|---|
+| VLG8961, EC-OFZ, A320 | 0% | +237.6 kHz | 2.0 kHz | −3.0 kHz | steady, beyond the search |
+| SHT9K, G-EUUU, A320 | 0% | +178.0 kHz | 1.4 kHz | −2.5 kHz | steady, beyond the search |
+| EFW29BA, G-EUUT, A320 | 0% | +155.9 kHz | 1.3 kHz | −2.1 kHz | steady, beyond the search |
+| EZY81QG, G-EJCC, A320 | 0% | +148.2 kHz | 1.2 kHz | −8.4 kHz | steady, beyond the search |
+| RYR71LE, EI-EKT, B738 | 0% | +136.3 kHz | 1.2 kHz | −3.0 kHz | steady, beyond the search |
+| VLG6023, EC-MBS, A320 | 0% | +130.9 kHz | 1.0 kHz | −2.4 kHz | steady, beyond the search |
+| RYR3TU, SP-RZN, B38M | 0% | +118.2 kHz | 1.1 kHz | −1.2 kHz | steady, beyond the search |
+| EZY79NW, G-EJCA, A320 | 0% | +117.2 kHz | 14.5 kHz | −0.9 kHz | beyond the search, less steady |
+| BAW586M, G-EUPG, A319 | 0% | +113.8 kHz | 0.8 kHz | −2.3 kHz | steady, beyond the search |
+| GVCRM (not in the database) | 0% | −114.8 kHz | 0.6 kHz | +2.3 kHz | steady, beyond the search |
+| KLC85F, PH-NXG, E295 | 0% | +28.4 kHz | 2.3 kHz | −80.0 kHz | settles during the burst |
+| G-DOSC, DA42 | 1% | −22.1 kHz | 0.7 kHz | −0.8 kHz | phase wanders |
+| G-HLOB, C172 | 1% | −15.2 kHz | 0.9 kHz | −6.4 kHz | phase wanders |
+| LGL4732, LX-LEA, E295 | 100% | +2.6 kHz | 1.4 kHz | +23.1 kHz | chirps, still coherent |
+| GULFD, G-ULFD, GA7C | 100% | −4.3 kHz | 0.9 kHz | +21.1 kHz | chirps, still coherent |
+| EZY85EC, G-UZEF, A20N | 100% | −0.7 kHz | 0.3 kHz | −0.1 kHz | steady (typical) |
+
+Callsigns are from the aircraft's own identification messages in the capture;
+registration and type from the aircraft database that ships with dump1090.
+
+* **Most "non-coherent" aircraft are steady, just far off frequency.** Ten of
+  the 13 sit 114 to 238 kHz from 1090 MHz (one below). Nine of them are as
+  steady as any coherent aircraft, about 1 kHz from frame to frame, and
+  inside a burst VLG6023's phase stays within about 18° of a straight line
+  (6° for EZY85EC, a typical coherent aircraft). They are mostly A320-family
+  and 737 airliners. Transponders are allowed ±1 MHz, so these are within
+  spec; they are simply outside the ±62 kHz searched.
+* **One transmitter settles during the burst.** KLC85F (PH-NXG, an Embraer
+  E195-E2) starts each frame at about +100 kHz for the first 30 µs or so,
+  then drops to about −13 kHz and wanders by ±20 kHz: the oscillator is still
+  settling after the transmitter keys on. Five frames, frequency every 16 µs:
+
+      +99.3 +102.5 −12.9  +3.0  −2.8 +22.2  kHz
+     +100.9  +96.7 −13.8  +9.4 −12.1 +12.6
+      +97.6  +99.5 −12.5  −0.4  +1.4  +5.2
+     +104.9 +101.2 −16.0  +1.6  −7.0 +17.4
+     +100.1  +97.8 −13.3  +4.3  −8.1 +21.0
+
+* **Two have a wandering phase.** Both are light aircraft, G-DOSC (a DA42)
+  and G-HLOB (a C172). Their average frequency is steady and well inside the
+  search, but their phase drifts slowly through the burst (73–86° spread, with
+  almost no sudden jumps): phase noise, not a chirp or a frequency step.
+* **Some coherent aircraft chirp.** LGL4732 (LX-LEA, another E195-E2) ramps
+  by about 30 kHz across every burst (−17, −5, +4, −1, +9, +12 kHz every 16 µs
+  in a typical frame), and GULFD (G-ULFD, a Gulfstream G700) similarly. Each
+  56-bit half is estimated on its own, so they still decode coherently. Both
+  E195-E2s in the capture move in frequency during the burst.
+* **Every transmitter has its own signature.** The steady aircraft mostly hold
+  their offset to 0.3–0.7 kHz from frame to frame (up to 1.4 kHz), anywhere
+  from −20 to +45 kHz, and chirping or settling transmitters repeat their
+  pattern in every frame. Offsets cluster by fleet: of the twelve aircraft near −18 kHz, seven are
+  easyJet A319/A320s (G-EZ.., HB-JZY; the others a TUI 737, a Citation, a
+  United and a Delta 767, and LOG555), and the six near +28 kHz are Jet2 and
+  TUI 737s and an Aer Lingus A320, presumably the same transponder fit. Two
+  easyJet A320s registered G-EJ.. are instead in the far-off group, at +117 and
+  +148 kHz. The receiver's own error is small: −0.5 kHz median over all
+  frames.
+
+Searching up to about ±250 kHz would bring the steady but far-off transmitters
+into the coherent pass; that has not been tried yet.
+
 ## Limitations
 
-* **About a quarter of aircraft are not coherent.** Older transponders with
-  free-running oscillators drift or chirp within a frame, so they fail the
-  rho2 gate and gain nothing (they're decoded exactly as before).
+* **About a quarter of aircraft are not coherent.** Most of them have a
+  steady carrier more than 62 kHz off 1090 MHz, outside the search; a few
+  settle during the burst or have a wandering phase (see "What the carriers
+  show"). They fail the rho2 gate and gain nothing (they're decoded exactly
+  as before).
 * **Frames with phase modulation on the pulses** (the newer 8-PSK overlay
   that some transponders add on top of the normal pulses) can never be
   coherent in this sense, and also fail the gate.

@@ -58,7 +58,12 @@ RTL-SDR capture decoded on a Raspberry Pi 5 unless stated otherwise.
    larger. Quality = 5.5 × the mean of min(|La − Lb|, 32) over the bits (11/16
    of the sum per byte), so at most 176: roughly the old 256·Σ|a−b| / Σ(a+b),
    so the gates keep their meaning.
-6. **Output** (`emitFrame`). Scored and decoded by the stock code. Then:
+6. **Coherent second pass** (`demod_2400x_coherent.c`, the `coherent_decode`
+   kernel). A frame whose bits fail the CRC, if the quality of its first 56
+   bits is at least `COHERENT_GATE` (96), is decoded again from the I/Q kept
+   in the FIFO, using the carrier phase. If the coherent bits pass the CRC
+   they replace the original ones. See [Coherent second pass](#coherent-second-pass).
+7. **Output** (`emitFrame`). Scored and decoded by the stock code. Then:
    * Fine arrival time: the decoded chips are correlated with the signal at
      `pos−2 … pos+2` and the best offset is used for the MLAT timestamp. The
      correlation turns the log bytes back into magnitudes (a 256-entry table),
@@ -89,7 +94,7 @@ RTL-SDR capture decoded on a Raspberry Pi 5 unless stated otherwise.
 | `locate_preamble` NEON: threshold test in 16-bit lanes (superseded: the 8-bit log metric has no divide, so no pre-check) | minp·(256 − T) ≥ T·(gap + 1) with the gap summed in saturating 16-bit adds can only pass wrongly, never reject wrongly; the few blocks that pass get the exact 32-bit metric, so the output is still bit-exact | At threshold 50: Pi 5 1.14 → 1.03 ms, Pi 3B 10.69 → 10.13 ms; threshold 0 (everything passes) is slower, 1.58 → 2.37 ms |
 | Preamble metric without the factor 2 on `minp` (`PREAMBLE_KK`), `PEAMBLE_THRES` 50 → 28 (superseded by the 8-bit log metric, threshold 86) | Both test the same ratio `minp / (gap + 1)`, so only the threshold changes (50 ≙ 27.7); one multiply less | Candidates −7% (RTL-SDR), −9% (SDRplay); messages −0.1%, +0.07%, same aircraft; CPU −2.9%, −3.1% on the Pi 5. Threshold 24 gave the SDRplay a 26th aircraft |
 | Upsampler square root within ±1 (no exact fix-ups; superseded: the 8-bit log has no square root and is exact) | Only the benchmark needed exact magnitudes | `upsample12` −10.7% on the Pi 3B (ARMv7), −6% on the Pi 5; CPU −2.8% (RTL-SDR), −3.0% (SDRplay) on the Pi 5; same aircraft and positions, messages ±1 |
-| Demodulate in 32768-sample pieces (`DEMOD_BLOCK`) | The 12 MHz data for a whole FIFO buffer is 1.3 MB; a piece's fits in L2 between upsample, preamble search and decodes. Done inside `demodulate2400x()`, as the drivers need the FIFO buffers to stay the size of their transfers | Output byte-identical; CPU −4.4% (RTL-SDR), −8.4% (SDRplay) on the Pi 5 |
+| Demodulate in 32768-sample pieces (`DEMOD_BLOCK`): smaller buffers for L2, inside the demodulator | The 12 MHz data for a whole FIFO buffer was 1.3 MB; a piece's fits in L2 between upsample, preamble search and decodes. Done inside `demodulate2400x()`, as if the FIFO buffers were 32768 samples, because the FIFO itself can't shrink: the RTL-SDR, HackRF, LimeSDR and bladeRF drivers put each transfer (up to 131072 samples) into one buffer and drop what doesn't fit, and the stock demodulator would change too | Output byte-identical; CPU −4.4% (RTL-SDR), −8.4% (SDRplay) on the Pi 5 |
 | 8-bit log power instead of the magnitude (`upsample12`, `locate_preamble`, `decode_bits`) | The square root (ARMv7 has no vector one) and the metric divide were the costliest steps; in logs the metric ratio is a difference. The float of P + 1 gives the log in 4 instructions; bytes halve the 12 MHz data and put 16 candidates in a NEON register. The pre-check and exact metric path go: every position gets the whole metric. Quality is capped at 32 steps per bit, or noise chips (the log of noise has a long tail) inflate weak frames' quality: twice the coherent attempts on the RTL-SDR, 8× on the SDRplay, and 3% fewer weak synthetic frames. `fineTiming` correlates magnitudes from a table, or weak frames' timestamps were ±1 tick in 4% of cases | Pi 5 demodulation −22% / −20% / −29% (RTL-SDR a / b / SDRplay 5 MHz), messages +0.6% / +0.7% / +0.1%, aircraft with 3+ messages 140 / 141 / 19 (dev 141 / 141 / 19); Pi 3B 20 s decode 11.75 → 8.96 s (−24%), messages +0.7%, aircraft 130 = 130; MLAT timestamps on synthetic frames identical to dev. Pi 3B kernels: `upsample12` 10.29 → 8.43 ms, `locate_preamble` 10.14 → 5.21 ms (any threshold), `decode_bits` 302 → 245 ns |
 | ARMv7 `upsample12`: partial transpose instead of single-byte stores | With byte outputs, `vtrn.8` and `vtrn.16` on the phase registers give `[c0 c1 c2 c3]` of windows k and k + 4; `ph[4]` shifted by 8k (as 32-bit lanes) and `vtrn.32` add c4, giving each window's 5 outputs in one register (11 shuffles per 8 windows). Stored 8 bytes at a time at `5w`, overlapping, they are in tick order, and the AArch64 `vld3q_u16` split into the 6 rows is shared, replacing 40 lane stores per 8 windows. A 3-way split between registers doesn't exist (`vuzp` is 2-way), so the 248-byte stack buffer stays; it lives in L1 | Pi 3B `upsample12` 8.46 → 7.18 ms (−15%), 20 s decode 8.97 → 8.47 s (−5.6%), identical output; AArch64 unchanged |
 
@@ -143,10 +148,6 @@ Generic is the reference; NEON and AVX2 must match it exactly, which
   than it sharpens pulses; weak frames 1205 → 616 at `a = 0.1`.
 * **Lower `PEAMBLE_THRES`** (old scale, with the factor 2): 50 → 40 gives +1.2% messages for +64% CPU;
   at 30, false aircraft appear.
-* **Smaller FIFO buffers** (32768 × 48 instead of 131072 × 12): same gain
-  as `DEMOD_BLOCK` with `--ifile`, but the RTL-SDR, HackRF, LimeSDR and
-  bladeRF drivers put each transfer (up to 131072 samples) into one buffer
-  and drop what doesn't fit, and the stock demodulator would change too.
 * **Upsampling only around detected preambles** (with 16-bit magnitudes): the 6-phase metric needs
   the full 12 MHz data, and a 2.4 MHz four-pulse pre-test passes 42% of
   positions (95% of 64-sample blocks); upsampling on demand for the decodes
@@ -280,6 +281,36 @@ doesn't have the two options.
 * Upstream code shifts `1 << df` with `df` up to 31 in `mode_s.c` and
   `demod_2400.c` (undefined for an `int`, found by UBSan); left as upstream.
 
+## Coherent second pass
+
+Built in with `-DDEMOD_2400X_COHERENT` (in the Makefile) and on by default;
+`--no-coherent` switches it off, and the decoder is then byte-for-byte plain
+DEMOD_2400X. The method, results and settings are in
+[COHERENT-demod2400x.md](COHERENT-demod2400x.md); in short:
+
+* **Why:** the normal decoder compares the power of the two chips of each bit
+  and ignores the phase, so all of the noise in both chips counts against the
+  decision. Correlating the chips with the carrier keeps only the noise in
+  phase with it.
+* **When:** only for frames that fail the CRC with a first-half quality of at
+  least `COHERENT_GATE` (96), and the kernel stops early if the carrier isn't
+  coherent (rho2 below `COHERENT_RHO2`, 0.6): noise, overlapping frames, and
+  about a quarter of aircraft, mostly steady transmitters more than 62 kHz
+  off 1090 MHz (outside the search), a few whose frequency or phase moves
+  during the burst (see "What the carriers show" in the COHERENT doc).
+* **How:** the I/Q kept in the FIFO is interpolated to complex chips at the
+  position the normal decoder chose; each 56-bit half gets its own frequency
+  (a correlator over 32 bins) and phase, estimated from each bit's stronger
+  chip; then the bits are sliced against the carrier. The second half is
+  decoded whatever the DF says.
+* **Results** (60 s RTL-SDR capture): 84,545 → 93,827 messages (+11%), 139
+  → 150 aircraft, for 3.0 → 3.7 s of demodulation on the Pi 5. Of 603,303
+  attempts, 126,705 had a coherent carrier and 9,311 were rescued; rescued
+  frames are timed like the others.
+* **Kernel:** `coherent_decode`, a starch function with generic, NEON and
+  AVX2 versions, bit-exact; 1.80 µs per full decode on the Pi 5 (0.82 µs
+  when it stops at the gate), 10.1 / 4.7 µs on the Pi 3B.
+
 ## Raspberry Pi 3B
 
 A Pi 3 Model B (Rev 1.2, Cortex-A53 at 1.2 GHz) running Volumio, a 32-bit OS,
@@ -330,7 +361,4 @@ linked a stub library (not committed).
 
 ## Possible next steps
 
-* Coherent demodulation as a fallback when magnitude demodulation fails,
-  reusing the I/Q kept in the FIFO: done (`-DDEMOD_2400X_COHERENT`), see
-  [COHERENT-demod2400x.md](COHERENT-demod2400x.md).
 * An early DF check before decoding the second half and scoring.

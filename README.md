@@ -27,10 +27,10 @@ refines the arrival time for MLAT. The heavy kernels are starch functions
 with generic, NEON and AVX2 versions, checked bit-identical by
 `starch-benchmark -V`.
 
-On a 60 s Raspberry Pi 4 RTL-SDR capture it decodes about 28% more messages
+On a 60 s Raspberry Pi 4 RTL-SDR capture it decodes about 32% more messages
 than stock dump1090-fa (16% without its coherent second pass), mostly weak
-signals from distant aircraft, for about 1.8 times the demodulation CPU on a
-Pi 4 or Pi 5 and 2.7 times on a Pi 3B.
+signals from distant aircraft, for about 1.8 to 2 times the demodulation CPU
+on a Pi 4 or Pi 5 and 2.8 times on a Pi 3B.
 
 * [README-demod2400x.md](README-demod2400x.md): design and results
 * [NOTES-demod2400x.md](NOTES-demod2400x.md): development notes, decisions and

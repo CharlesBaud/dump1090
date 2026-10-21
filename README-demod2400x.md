@@ -53,10 +53,10 @@ recording and synthetic frames; see
 
 | | Stock | DEMOD_2400X | Change | + coherent | Change |
 |---|---|---|---|---|---|
-| Usable messages | 73,146 | 84,545 | +16% | 93,827 | +28% |
-| DF17 (ADS-B) | 10,352 | 11,830 | +14% | 13,365 | +29% |
-| Global CPR positions | 3,510 | 3,977 | +13% | 4,538 | +29% |
-| Aircraft | 136 | 139 | +3 | 150 | +14 |
+| Usable messages | 73,146 | 84,545 | +16% | 96,370 | +32% |
+| DF17 (ADS-B) | 10,352 | 11,830 | +14% | 13,823 | +34% |
+| Global CPR positions | 3,510 | 3,977 | +13% | 4,692 | +34% |
+| Aircraft | 136 | 139 | +3 | 155 | +19 |
 
 Positions and tracks are timed by the wall clock, so files are decoded with
 `--throttle` (at the speed they were captured). Without it the minute is
@@ -70,29 +70,29 @@ connection, is missed by all three alike):
 
 | RSSI (dBFS) | Stock | DEMOD_2400X | Change | + coherent | Change |
 |---|---|---|---|---|---|
-| below −27 | 144 | 304 | +111% | 1,035 | +619% |
-| −27 to −24 | 2,732 | 4,724 | +73% | 6,749 | +147% |
-| −24 to −21 | 6,454 | 8,588 | +33% | 9,927 | +54% |
-| −21 to −18 | 9,587 | 11,423 | +19% | 12,642 | +32% |
-| −18 to −15 | 12,013 | 13,558 | +13% | 14,731 | +23% |
-| −15 to −10 | 17,956 | 19,675 | +10% | 21,184 | +18% |
-| −10 to −5 | 9,902 | 10,639 | +7% | 11,337 | +14% |
-| above −5 | 14,018 | 15,272 | +9% | 15,802 | +13% |
+| below −27 | 144 | 304 | +111% | 1,238 | +760% |
+| −27 to −24 | 2,732 | 4,724 | +73% | 7,337 | +169% |
+| −24 to −21 | 6,454 | 8,588 | +33% | 10,526 | +63% |
+| −21 to −18 | 9,587 | 11,423 | +19% | 13,016 | +36% |
+| −18 to −15 | 12,013 | 13,558 | +13% | 15,073 | +25% |
+| −15 to −10 | 17,956 | 19,675 | +10% | 21,499 | +20% |
+| −10 to −5 | 9,902 | 10,639 | +7% | 11,395 | +15% |
+| above −5 | 14,018 | 15,272 | +9% | 15,851 | +13% |
 
 Position messages by distance from the receiver:
 
 | Distance | Stock | DEMOD_2400X | Change | + coherent | Change | Aircraft (stock / DEMOD_2400X / + coherent) |
 |---|---|---|---|---|---|---|
-| 0–50 km | 737 | 818 | +11% | 883 | +20% | 12 / 13 / 13 |
-| 50–100 km | 1,444 | 1,583 | +10% | 1,750 | +21% | 30 / 31 / 33 |
-| 100–150 km | 893 | 1,014 | +14% | 1,173 | +31% | 33 / 33 / 33 |
-| 150–200 km | 438 | 527 | +20% | 626 | +43% | 20 / 23 / 24 |
-| 200–250 km | 121 | 145 | +20% | 196 | +62% | 10 / 13 / 15 |
-| 250–300 km | 16 | 25 | +56% | 48 | +200% | 2 / 4 / 4 |
-| over 300 km | 37 | 49 | +32% | 62 | +68% | 5 / 5 / 5 |
+| 0–50 km | 737 | 818 | +11% | 884 | +20% | 12 / 13 / 13 |
+| 50–100 km | 1,444 | 1,583 | +10% | 1,802 | +25% | 30 / 31 / 33 |
+| 100–150 km | 893 | 1,014 | +14% | 1,222 | +37% | 33 / 33 / 33 |
+| 150–200 km | 438 | 527 | +20% | 658 | +50% | 20 / 23 / 24 |
+| 200–250 km | 121 | 145 | +20% | 208 | +72% | 10 / 13 / 15 |
+| 250–300 km | 16 | 25 | +56% | 60 | +275% | 2 / 4 / 6 |
+| over 300 km | 37 | 49 | +32% | 72 | +95% | 5 / 5 / 5 |
 
 Weak synthetic frames (2,000 DF17 frames with a random ±100 kHz carrier
-offset, decoded out of 2,000): 689 (stock), 1,407 (DEMOD_2400X), 1,592
+offset, decoded out of 2,000): 689 (stock), 1,407 (DEMOD_2400X), 1,710
 (+ coherent).
 The generator and checker are in [sim/](sim/).
 
@@ -115,21 +115,22 @@ Demodulation time for the 60 s capture (`--fix`):
 
 | | Stock | DEMOD_2400X | + coherent |
 |---|---|---|---|
-| Raspberry Pi 5 (Cortex-A76) | 2.1 s | 3.0 s (gcc 14), 2.8 s (clang 19) | 3.7 s (gcc), 3.6 s (clang) |
-| Raspberry Pi 4 (Cortex-A72) | 4.0 s | 5.8 s | 7.5 s |
-| Raspberry Pi 3B (Cortex-A53, 32-bit) | 8.6 s | 18.4 s | 23.5 s |
+| Raspberry Pi 5 (Cortex-A76) | 2.1 s | 3.0 s (gcc 14), 2.8 s (clang 19) | 3.8 s (gcc), 3.6 s (clang) |
+| Raspberry Pi 4 (Cortex-A72) | 3.9 s | 5.9 s | 7.9 s |
+| Raspberry Pi 3B (Cortex-A53, 32-bit) | 8.6 s | 18.4 s | 24.0 s |
 
 Measured with `--no-demod2400x`, `--no-coherent` and the default. The Pi 4
 runs were on three cores while the live receiver was also running on the same
 Pi, so they may be slightly high. The Pi 3B times are for the first 20 s of
-the capture, times 3; on a Pi 3B the default uses about 39% of one core for
+the capture, times 3; on a Pi 3B the default uses about 40% of one core for
 demodulation (see
 [NOTES-demod2400x.md](NOTES-demod2400x.md#raspberry-pi-3b)). A Pi 3B needs a
 heatsink: if it overheats and throttles to 600 MHz it can't keep up and drops
 samples (`vcgencmd get_throttled` shows 0x0 if it has never throttled), and
 `--no-coherent` or `--no-demod2400x` reduce the load. Live on the Pi 4,
-with about 105,000 messages a minute, demodulation takes about 25% of one
-core. These results come from one receiver and a one-minute capture; longer
+with about 105,000 messages a minute, demodulation took about 25% of one
+core before the wider coherent search (about 5% more with it, from the
+captures). These results come from one receiver and a one-minute capture; longer
 side-by-side runs are in progress.
 
 ## Compilers
@@ -140,11 +141,11 @@ then `make test`):
 
 | Compiler | Target | Warnings | `make test` |
 |---|---|---|---|
-| gcc 14.2 | AArch64 (Pi 5) | 0 | pass (74 validations) |
-| clang 19.1 | AArch64 (Pi 5) | 0 | pass (74 validations) |
-| gcc 14.2 (cross) | ARMv7 | 0 | `starch-benchmark -V` passes (74), run natively on AArch64 |
-| gcc 14.2 (cross) | x86-64 AVX2 | 0 | pass under qemu-x86_64 (68 validations) |
-| clang 19.1 (cross) | x86-64 AVX2 | 0 | pass under qemu-x86_64 (68 validations) |
+| gcc 14.2 | AArch64 (Pi 5) | 0 | pass (95 validations) |
+| clang 19.1 | AArch64 (Pi 5) | 0 | pass (95 validations) |
+| gcc 14.2 (cross) | ARMv7 | 0 | `starch-benchmark -V` passes (95), run natively on AArch64 |
+| gcc 14.2 (cross) | x86-64 AVX2 | 0 | pass under qemu-x86_64 (89 validations) |
+| clang 19.1 (cross) | x86-64 AVX2 | 0 | pass under qemu-x86_64 (89 validations) |
 | gcc (native) | x86-64 AVX2 | 0 | `starch-benchmark -V` passes on real hardware |
 
 The gcc and clang AArch64 builds give byte-identical decoder output,
@@ -158,4 +159,5 @@ correctness also needs a run on real hardware. All the AVX2 kernels, including t
 `decode_bits` and `coherent_decode`, pass `starch-benchmark -V` on real x86-64
 hardware, also after the change to 8-bit log power, which made the AVX2
 `upsample12` 39% faster (1.43 → 0.87 ms per call) and `locate_preamble` 47%
-faster (0.38 → 0.20 ms).
+faster (0.38 → 0.20 ms). The ±250 kHz coherent frequency search added since
+has so far been checked under QEMU only, not on real x86 hardware.

@@ -97,6 +97,7 @@ RTL-SDR capture decoded on a Raspberry Pi 5 unless stated otherwise.
 | Demodulate in 32768-sample pieces (`DEMOD_BLOCK`): smaller buffers for L2, inside the demodulator | The 12 MHz data for a whole FIFO buffer was 1.3 MB; a piece's fits in L2 between upsample, preamble search and decodes. Done inside `demodulate2400x()`, as if the FIFO buffers were 32768 samples, because the FIFO itself can't shrink: the RTL-SDR, HackRF, LimeSDR and bladeRF drivers put each transfer (up to 131072 samples) into one buffer and drop what doesn't fit, and the stock demodulator would change too | Output byte-identical; CPU −4.4% (RTL-SDR), −8.4% (SDRplay) on the Pi 5 |
 | 8-bit log power instead of the magnitude (`upsample12`, `locate_preamble`, `decode_bits`) | The square root (ARMv7 has no vector one) and the metric divide were the costliest steps; in logs the metric ratio is a difference. The float of P + 1 gives the log in 4 instructions; bytes halve the 12 MHz data and put 16 candidates in a NEON register. The pre-check and exact metric path go: every position gets the whole metric. Quality is capped at 32 steps per bit, or noise chips (the log of noise has a long tail) inflate weak frames' quality: twice the coherent attempts on the RTL-SDR, 8× on the SDRplay, and 3% fewer weak synthetic frames. `fineTiming` correlates magnitudes from a table, or weak frames' timestamps were ±1 tick in 4% of cases | Pi 5 demodulation −22% / −20% / −29% (RTL-SDR a / b / SDRplay 5 MHz), messages +0.6% / +0.7% / +0.1%, aircraft with 3+ messages 140 / 141 / 19 (dev 141 / 141 / 19); Pi 3B 20 s decode 11.75 → 8.96 s (−24%), messages +0.7%, aircraft 130 = 130; MLAT timestamps on synthetic frames identical to dev. Pi 3B kernels: `upsample12` 10.29 → 8.43 ms, `locate_preamble` 10.14 → 5.21 ms (any threshold), `decode_bits` 302 → 245 ns |
 | ARMv7 `upsample12`: partial transpose instead of single-byte stores | With byte outputs, `vtrn.8` and `vtrn.16` on the phase registers give `[c0 c1 c2 c3]` of windows k and k + 4; `ph[4]` shifted by 8k (as 32-bit lanes) and `vtrn.32` add c4, giving each window's 5 outputs in one register (11 shuffles per 8 windows). Stored 8 bytes at a time at `5w`, overlapping, they are in tick order, and the AArch64 `vld3q_u16` split into the 6 rows is shared, replacing 40 lane stores per 8 windows. A 3-way split between registers doesn't exist (`vuzp` is 2-way), so the 248-byte stack buffer stays; it lives in L1 | Pi 3B `upsample12` 8.46 → 7.18 ms (−15%), 20 s decode 8.97 → 8.47 s (−5.6%), identical output; AArch64 unchanged |
+| Coherent frequency search over ±250 kHz (was ±62 kHz), in two stages | Most aircraft the coherent pass gave up on have a steady carrier 100–240 kHz off (transponders are allowed ±1 MHz); 8-bit block sums cancel at those offsets, so more bins alone can't reach them. Stage 1: 2-bit blocks, 16 wide bins 31.25 kHz apart for each 28-bit piece; stage 2: the 16 central fine bins (±30 kHz) around each piece's peak, the stronger kept. The wide bin goes into the slicing phasors, so chips are never de-rotated; regrouping is vectorised through transposed tables | Same as an exact float search over ±248 kHz. Messages +2.7% / +4.0% / +4.6% (RTL-SDR a / b, SDRplay 5 MHz), coherent rescues +26..45%, aircraft +5 / +3 / 0; demodulation CPU +7.0% / +8.6% / +2.3% on the Pi 5, +5.8% on the Pi 3B; weak synthetic frames (random ±100 kHz offsets) 1,592 → 1,710 |
 
 ### Overflow bound
 
@@ -260,7 +261,7 @@ doesn't have the two options.
   installations get the benefit without changing their configuration;
   `--no-demod2400x` gives byte-identical stock output for anyone who needs it,
   and `--no-coherent` drops the second pass. The cost is CPU: on a Pi 3B the
-  default uses about 39% of one core for demodulation against 14% for stock
+  default uses about 40% of one core for demodulation against 14% for stock
   (see [Raspberry Pi 3B](#raspberry-pi-3b)). A Pi 3B running it needs a
   heatsink: if it throttles to 600 MHz it can't keep up and drops samples.
   `vcgencmd get_throttled` shows whether it has throttled (0x0 if never).
@@ -295,21 +296,22 @@ DEMOD_2400X. The method, results and settings are in
 * **When:** only for frames that fail the CRC with a first-half quality of at
   least `COHERENT_GATE` (96), and the kernel stops early if the carrier isn't
   coherent (rho2 below `COHERENT_RHO2`, 0.6): noise, overlapping frames, and
-  about a quarter of aircraft, mostly steady transmitters more than 62 kHz
-  off 1090 MHz (outside the search), a few whose frequency or phase moves
-  during the burst (see "What the carriers show" in the COHERENT doc).
+  transmitters whose frequency or phase moves during the burst (see "What
+  the carriers show" in the COHERENT doc).
 * **How:** the I/Q kept in the FIFO is interpolated to complex chips at the
   position the normal decoder chose; each 56-bit half gets its own frequency
-  (a correlator over 32 bins) and phase, estimated from each bit's stronger
-  chip; then the bits are sliced against the carrier. The second half is
-  decoded whatever the DF says.
-* **Results** (60 s RTL-SDR capture): 84,545 → 93,827 messages (+11%), 139
-  → 150 aircraft, for 3.0 → 3.7 s of demodulation on the Pi 5. Of 603,303
-  attempts, 126,705 had a coherent carrier and 9,311 were rescued; rescued
+  and phase, estimated from each bit's stronger chip; then the bits are
+  sliced against the carrier. The second half is decoded whatever the DF
+  says. The frequency search covers ±250 kHz in two stages: 16 wide bins
+  31.25 kHz apart on 2-bit blocks, for each 28-bit piece, then 16 fine bins
+  4 kHz apart around each piece's peak.
+* **Results** (60 s RTL-SDR capture): 84,545 → 96,370 messages (+14%), 139
+  → 155 aircraft, for 3.0 → 3.8 s of demodulation on the Pi 5. Of 596,098
+  attempts, 151,907 had a coherent carrier and 11,820 were rescued; rescued
   frames are timed like the others.
 * **Kernel:** `coherent_decode`, a starch function with generic, NEON and
-  AVX2 versions, bit-exact; 1.80 µs per full decode on the Pi 5 (0.82 µs
-  when it stops at the gate), 10.1 / 4.7 µs on the Pi 3B.
+  AVX2 versions, bit-exact; 2.4 µs per full decode on the Pi 5 (1.03 µs
+  when it stops at the gate), 13.0 / 5.7 µs on the Pi 3B.
 
 ## Raspberry Pi 3B
 
@@ -322,7 +324,7 @@ the Pi 5's.
 |---|---|---|---|
 | `--no-demod2400x` (stock) | 24,345 | 2.9 s | 14% |
 | `--no-coherent` | 28,126 | 6.1 s | 31% |
-| default (DEMOD_2400X + coherent) | 31,152 | 7.8 s | 39% |
+| default (DEMOD_2400X + coherent) | 32,025 | 8.0 s | 40% |
 
 Kernel times on the Pi 3B (ARMv7 NEON) against the Pi 5 (AArch64 NEON):
 
@@ -331,7 +333,7 @@ Kernel times on the Pi 3B (ARMv7 NEON) against the Pi 5 (AArch64 NEON):
 | `upsample12` | 7.17 ms | 1.27 ms |
 | `locate_preamble` (any threshold) | 5.26 ms | 0.50 ms |
 | `decode_bits` (7 bytes) | 253 ns | 26 ns |
-| `coherent_decode` (full / stopped at the gate) | 10.1 / 4.7 µs | 1.80 / 0.82 µs |
+| `coherent_decode` (full / stopped at the gate) | 13.0 / 5.7 µs | 2.4 / 1.03 µs |
 
 So a Pi 3B can run it live, at roughly 45% of one core once USB input and
 the rest are added (on the Pi 4 they add about 4 points). The upsampler and

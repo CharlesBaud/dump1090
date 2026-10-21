@@ -678,8 +678,24 @@ static void coh_chips16_neon(const int32_t *c32, int n, int shift,
 }
 
 // One half of the frame, bits first .. first+55, on its own (as coh_half_generic)
+// coh_wide_regroup, 8 blocks at a time: rotate by wide bin k (transposed table), sum
+// each 4 with pairwise adds (int16, wrapping, so any order gives the same), >> 2
+static inline __attribute__((always_inline))
+void coh_wide_regroup_neon(const int16_t *wr, const int16_t *wi, int k, int16_t *br, int16_t *bi)
+{
+    for (int q = 0; q < 32; q += 8) {
+        int16x8_t rr, ri;
+        coh_rot_neon(vld1q_s16(wr + q), vld1q_s16(wi + q), vld1q_s16(&coh_widet_re[k][q]), vld1q_s16(&coh_widet_im[k][q]), &rr, &ri);
+        const int16x4_t pr = vpadd_s16(vget_low_s16(rr), vget_high_s16(rr));
+        const int16x4_t pi = vpadd_s16(vget_low_s16(ri), vget_high_s16(ri));
+        const int16x4_t sr = vshr_n_s16(vpadd_s16(pr, pr), 2), si = vshr_n_s16(vpadd_s16(pi, pi), 2);
+        vst1_lane_s32((int32_t *) (br + q / 4), vreinterpret_s32_s16(sr), 0);
+        vst1_lane_s32((int32_t *) (bi + q / 4), vreinterpret_s32_s16(si), 0);
+    }
+}
+
 static int coh_half_neon(const int16_t *iq, int pos, int first, unsigned thres, const int16x8_t *cv,
-                         const int16x8_t (*ci)[2], uint8_t *out, uint32_t *rho2_out, uint32_t *f_out, uint32_t *q)
+                         const int16x8_t (*ci)[2], uint8_t *out, uint32_t *rho2_out, uint32_t *f_out, uint32_t *k_out, uint32_t *q)
 {
     int32_t c32[4 * COH_HALF] __attribute__((aligned(16)));
     int16_t ar[COH_HALF], ai[COH_HALF], br[COH_HALF], bi[COH_HALF];
@@ -702,10 +718,10 @@ static int coh_half_neon(const int16_t *iq, int pos, int first, unsigned thres, 
     coh_chips16_neon(c32, COH_HALF, cs, ar, ai, br, bi);
 
     // Carrier sample of each bit: the chip with the larger magnitude (|a|^2 >= |b|^2,
-    // int32), as a 16-bit lane mask per bit; then block sums of the samples, normalised
+    // int32), as a 16-bit lane mask per bit; then 2-bit block sums of the samples, normalised
     uint16x8_t pick_a[COH_NBLOCKS];
-    int32_t bre[COH_NBLOCKS], bim[COH_NBLOCKS];
-    uint32_t bmax = 0;
+    int32_t sre[COH_WBLK] __attribute__((aligned(16))), sim[COH_WBLK] __attribute__((aligned(16)));
+    uint32x4_t mxb = vdupq_n_u32(0);
     for (int m = 0; m < COH_NBLOCKS; m++) {
         const int i = m * COH_BLOCK;
         const int16x8_t xar = vld1q_s16(ar + i), xai = vld1q_s16(ai + i), xbr = vld1q_s16(br + i), xbi = vld1q_s16(bi + i);
@@ -714,30 +730,72 @@ static int coh_half_neon(const int16_t *iq, int pos, int first, unsigned thres, 
         const int32x4_t pbl = vmlal_s16(vmull_s16(vget_low_s16(xbr), vget_low_s16(xbr)), vget_low_s16(xbi), vget_low_s16(xbi));
         const int32x4_t pbh = vmlal_s16(vmull_s16(vget_high_s16(xbr), vget_high_s16(xbr)), vget_high_s16(xbi), vget_high_s16(xbi));
         pick_a[m] = vcombine_u16(vmovn_u32(vcgeq_s32(pal, pbl)), vmovn_u32(vcgeq_s32(pah, pbh)));
-        bre[m] = coh_hsum_s16_neon(vbslq_s16(pick_a[m], xar, xbr));
-        bim[m] = coh_hsum_s16_neon(vbslq_s16(pick_a[m], xai, xbi));
-        if (coh_abs(bre[m]) > bmax) bmax = coh_abs(bre[m]);
-        if (coh_abs(bim[m]) > bmax) bmax = coh_abs(bim[m]);
+        const int32x4_t s2r = vpaddlq_s16(vbslq_s16(pick_a[m], xar, xbr));      // 4 sums of 2 bits
+        const int32x4_t s2i = vpaddlq_s16(vbslq_s16(pick_a[m], xai, xbi));
+        vst1q_s32(sre + 4 * m, s2r);
+        vst1q_s32(sim + 4 * m, s2i);
+        mxb = vmaxq_u32(mxb, vmaxq_u32(vreinterpretq_u32_s32(vabsq_s32(s2r)), vreinterpretq_u32_s32(vabsq_s32(s2i))));
     }
-    const int bs = coh_shift(bmax, COH_BLOCK_BITS);
+#ifdef __aarch64__
+    const uint32_t bmax = vmaxvq_u32(mxb);
+#else
+    uint32x2_t mb2 = vmax_u32(vget_low_u32(mxb), vget_high_u32(mxb));
+    const uint32_t bmax = vget_lane_u32(vpmax_u32(mb2, mb2), 0);
+#endif
+    const int bs = coh_shift(bmax, COH_WIDE_BITS);
+    int16_t wr[32] __attribute__((aligned(16))) = { 0 }, wi[32] __attribute__((aligned(16))) = { 0 };
+    for (int m = 0; m < COH_WBLK; m++) {
+        wr[m] = (int16_t) (sre[m] >> bs);
+        wi[m] = (int16_t) (sim[m] >> bs);
+    }
 
-    // Coarse search, 8 bins per vector
-    int32_t p[COH_BINS_PAD] __attribute__((aligned(16)));
-    for (int j = 0; j < COH_BINS_PAD; j += 8) {
-        int16x8_t sre = vdupq_n_s16(0), sim = vdupq_n_s16(0);
-        for (int m = 0; m < COH_NBLOCKS; m++) {
-            int16x8_t rr, ri;
-            coh_rot_neon(vdupq_n_s16((int16_t) (bre[m] >> bs)), vdupq_n_s16((int16_t) (bim[m] >> bs)),
-                         vld1q_s16(&coh_bin_re[m][j]), vld1q_s16(&coh_bin_im[m][j]), &rr, &ri);
-            sre = vaddq_s16(sre, rr);
-            sim = vaddq_s16(sim, ri);
+    // Wide search, first stage: the peak of each 14-block piece over 16 wide bins (two vectors)
+    int kc[2];
+    for (int h = 0; h < 2; h++) {
+        int32_t p1[COH_WBINS] __attribute__((aligned(16)));
+        for (int j = 0; j < COH_WBINS; j += 8) {
+            int16x8_t sre16 = vdupq_n_s16(0), sim16 = vdupq_n_s16(0);
+            for (int m = 0; m < COH_WBLK / 2; m++) {
+                int16x8_t rr, ri;
+                coh_rot_neon(vdupq_n_s16(wr[h * COH_WBLK / 2 + m]), vdupq_n_s16(wi[h * COH_WBLK / 2 + m]),
+                             vld1q_s16(&coh_wide_re[m][j]), vld1q_s16(&coh_wide_im[m][j]), &rr, &ri);
+                sre16 = vaddq_s16(sre16, rr);
+                sim16 = vaddq_s16(sim16, ri);
+            }
+            vst1q_s32(p1 + j, vmlal_s16(vmull_s16(vget_low_s16(sre16), vget_low_s16(sre16)), vget_low_s16(sim16), vget_low_s16(sim16)));
+            vst1q_s32(p1 + j + 4, vmlal_s16(vmull_s16(vget_high_s16(sre16), vget_high_s16(sre16)), vget_high_s16(sim16), vget_high_s16(sim16)));
         }
-        vst1q_s32(p + j, vmlal_s16(vmull_s16(vget_low_s16(sre), vget_low_s16(sre)), vget_low_s16(sim), vget_low_s16(sim)));
-        vst1q_s32(p + j + 4, vmlal_s16(vmull_s16(vget_high_s16(sre), vget_high_s16(sre)), vget_high_s16(sim), vget_high_s16(sim)));
+        kc[h] = coh_argmax(p1, COH_WBINS);
     }
-    const int f = coh_fine_index(p, coh_argmax(p, COH_BINS));
-    const int16_t rcr = coh_fine_chip[f][0], rci = coh_fine_chip[f][1];
-    const int16_t rbr = coh_fine_bit[f][0], rbi = coh_fine_bit[f][1];
+
+    // Second stage: around each peak, the central fine bins (two vectors); the stronger peak wins
+    int k = kc[0], f = 0;
+    int32_t pbest = -1;
+    for (int c = 0; c < (kc[1] != kc[0] ? 2 : 1); c++) {
+        int16_t br8[8] __attribute__((aligned(8))), bi8[8] __attribute__((aligned(8)));
+        coh_wide_regroup_neon(wr, wi, kc[c], br8, bi8);
+        int32_t p[COH_BINS_PAD] __attribute__((aligned(16))) = { 0 };
+        for (int j = COH_REF_LO; j < COH_REF_HI; j += 8) {
+            int16x8_t sre16 = vdupq_n_s16(0), sim16 = vdupq_n_s16(0);
+            for (int m = 0; m < COH_NBLOCKS; m++) {
+                int16x8_t rr, ri;
+                coh_rot_neon(vdupq_n_s16(br8[m]), vdupq_n_s16(bi8[m]),
+                             vld1q_s16(&coh_bin_re[m][j]), vld1q_s16(&coh_bin_im[m][j]), &rr, &ri);
+                sre16 = vaddq_s16(sre16, rr);
+                sim16 = vaddq_s16(sim16, ri);
+            }
+            vst1q_s32(p + j, vmlal_s16(vmull_s16(vget_low_s16(sre16), vget_low_s16(sre16)), vget_low_s16(sim16), vget_low_s16(sim16)));
+            vst1q_s32(p + j + 4, vmlal_s16(vmull_s16(vget_high_s16(sre16), vget_high_s16(sre16)), vget_high_s16(sim16), vget_high_s16(sim16)));
+        }
+        const int best = coh_argmax(p, COH_BINS);
+        if (p[best] > pbest) {
+            pbest = p[best];
+            k = kc[c];
+            f = coh_fine_index(p, best);
+        }
+    }
+    int16_t rbr, rbi, rcr, rci;
+    coh_steps(k, f, &rbr, &rbi, &rcr, &rci);
 
     // Phasors: first 8 one by one (as generic), then 8 at a time
     Pr[0] = 32767; Pi[0] = 0;
@@ -783,6 +841,7 @@ static int coh_half_neon(const int16_t *iq, int pos, int first, unsigned thres, 
     const uint32_t rho2 = coh_rho2(h_re, h_im, coh_hsum_u32_neon(e2v));
     *rho2_out = rho2;
     *f_out = (uint32_t) f;
+    *k_out = (uint32_t) k;
     if (rho2 < thres)
         return 0;
 
@@ -821,11 +880,11 @@ void STARCH_IMPL(coherent_decode, neon) (const int16_t * restrict iq, int pos, u
     memset(info, 0, COH_INFO_N * sizeof(*info));
 
     if (!coh_half_neon(iq, pos, 0, thres, cv, (const int16x8_t (*)[2]) ci, out,
-                       &info[COH_INFO_RHO2], &info[COH_INFO_FINE], &info[COH_INFO_Q1]))
+                       &info[COH_INFO_RHO2], &info[COH_INFO_FINE], &info[COH_INFO_WIDE], &info[COH_INFO_Q1]))
         return;
     info[COH_INFO_DECODED] = 1;
     // The second half whatever the DF says (as the magnitude decoder): scoring can
     // correct the DF bits, and every short DF is one bit from a long one
     coh_half_neon(iq, pos, COH_HALF, 0, cv, (const int16x8_t (*)[2]) ci, out,
-                  &info[COH_INFO_RHO2B], &info[COH_INFO_FINE2], &info[COH_INFO_Q2]);
+                  &info[COH_INFO_RHO2B], &info[COH_INFO_FINE2], &info[COH_INFO_WIDE2], &info[COH_INFO_Q2]);
 }

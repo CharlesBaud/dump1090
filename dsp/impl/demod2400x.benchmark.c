@@ -437,6 +437,51 @@ bool STARCH_BENCHMARK_VERIFY(decode_bits) (const uint8_t *p, unsigned nbytes, ui
 
 // Coherent decode: ordinary and full-range data with the gate open (thres 0, so the
 // bits are always sliced), and ordinary data with the usual gate (0.6 = 614/1024)
+// Synthetic frames for coherent_decode: preamble and 112 random bits as 0.5 us pulses,
+// sampled at 2.4 MHz, each on its own carrier offset (spread over the +-250 kHz search),
+// with a little noise; frame n starts at 12 MHz position coh_frame_pos(n)
+#define COH_BENCH_FRAMES 7
+static const double coh_bench_hz[COH_BENCH_FRAMES] = { -230e3, -120e3, -40e3, 5e3, 75e3, 180e3, 234e3 };
+
+static int coh_frame_pos(int n)
+{
+    return 2000 + 9000 * n;
+}
+
+static int16_t *demod2400x_make_coh_frames(int len)
+{
+    int16_t *iq = calloc(2 * (size_t) len, sizeof(*iq));
+    if (!iq)
+        return NULL;
+    static const int pre[16] = { 1, 0, 1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0 };
+    srand(3);
+    for (int n = 0; n < len; ++n) {
+        iq[2 * n] = (int16_t) ((rand() % 61) - 30);
+        iq[2 * n + 1] = (int16_t) ((rand() % 61) - 30);
+    }
+    for (int fr = 0; fr < COH_BENCH_FRAMES; ++fr) {
+        int chip[16 + 2 * 112];
+        for (int k = 0; k < 16; ++k)
+            chip[k] = pre[k];
+        for (int i = 0; i < 112; ++i) {
+            const int bit = rand() & 1;
+            chip[16 + 2 * i] = bit;
+            chip[17 + 2 * i] = !bit;
+        }
+        const double t0 = (coh_frame_pos(fr) + 15.5) / 12.0 - 0.25; // us: chip centres where the decoder samples
+        const double ph0 = 0.7 * fr;
+        for (int n = (int) (t0 * 2.4); n < (int) ((t0 + 120.0) * 2.4) + 2 && n < len; ++n) {
+            const int k = (int) floor((n / 2.4 - t0) / 0.5);
+            if (k < 0 || k >= 16 + 2 * 112 || !chip[k])
+                continue;
+            const double ph = ph0 + 2 * M_PI * coh_bench_hz[fr] * n / 2.4e6;
+            iq[2 * n] = (int16_t) (iq[2 * n] + lrint(1500 * cos(ph)));
+            iq[2 * n + 1] = (int16_t) (iq[2 * n + 1] + lrint(1500 * sin(ph)));
+        }
+    }
+    return iq;
+}
+
 void STARCH_BENCHMARK(coherent_decode) (void)
 {
     const int len = DEMOD2400X_BENCH_LEN;
@@ -452,6 +497,14 @@ void STARCH_BENCHMARK(coherent_decode) (void)
         STARCH_BENCHMARK_RUN( coherent_decode, in_full, 777, 0, out, info );
         STARCH_BENCHMARK_RUN( coherent_decode, in, 50003, 614, out, info );
     }
+
+    // Frames across the +-250 kHz search, at their own positions
+    int16_t *fr = demod2400x_make_coh_frames(len);
+    if (fr) {
+        for (int n = 0; n < COH_BENCH_FRAMES; ++n)
+            STARCH_BENCHMARK_RUN( coherent_decode, fr, coh_frame_pos(n), 614, out, info );
+    }
+    free(fr);
 
     free(in);
     free(in_full);

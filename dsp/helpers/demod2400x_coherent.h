@@ -16,14 +16,24 @@
 //    same polyphase table as upsample12, 16x16 -> 32-bit sums. They are shifted so
 //    the largest of the half is below 2^COH_CHIP_BITS and clamped to that, as int16.
 // 2. Carrier sample of each bit: x_a if |x_a|^2 >= |x_b|^2 (int32), else x_b (one pulse
-//    per bit, in the larger chip unless noise wins). 7 block sums of 8 (one per byte),
-//    normalised below 2^COH_BLOCK_BITS.
-// 3. Coarse search: for each of 32 bins (4 kHz apart, none at 0 Hz), sum over blocks (in block order) of
-//    rot(block, coh_bin[block][bin]) in int16; power re^2 + im^2 (int32); the first
-//    largest bin wins; parabola to 1/8 of a bin (coh_fine_index).
-// 4. Phasors P[i] = e^{-j 2 w i} per bit: P[0] = 32767, P[i] = rot(P[i-1], rb) for
-//    i < 8, then P[i] = rot(P[i-8], rb8) with rb8 = rot(P[7], rb). Q[i] = rot(rc, P[i])
-//    for the second chip of each bit (rc = e^{-j w}).
+//    per bit, in the larger chip unless noise wins). 28 block sums of 2 bits,
+//    normalised below 2^COH_WIDE_BITS (int16).
+// 3. Wide search, two stages, over +-250 kHz (transponders are allowed +-1 MHz, and
+//    many are 100-240 kHz off):
+//    a. For each 14-block piece (bits 0..27, 28..55), for each of 16 wide bins (31.25 kHz
+//       apart, none at 0 Hz), sum in int16 of rot(block m, coh_wide[m][bin]) for m < 14
+//       (piece-relative rows); power (int32); the first largest bin is the piece's peak.
+//    b. For each peak k (one if both pieces agree): the 28 blocks rotated by
+//       coh_wide[m][k] are summed in fours into 7 byte blocks, >> 2 (coh_wide_regroup);
+//       then the 16 central fine bins (8..23, +-30 kHz) of the 32 below, as before:
+//       sum over blocks of rot(block, coh_bin[block][bin]) in int16, power (int32),
+//       first largest wins, parabola to 1/8 of a bin (coh_fine_index, the other bins 0).
+//       The peak whose best power is larger wins (the first on a tie).
+// 4. Phasors P[i] = e^{-j 2 w i} per bit, w the wide bin plus the fine frequency:
+//    rb = rot(coh_fine_bit[f], coh_wide_bit[k]), rc = rot(coh_fine_chip[f],
+//    coh_wide_chip[k]); P[0] = 32767, P[i] = rot(P[i-1], rb) for i < 8, then
+//    P[i] = rot(P[i-8], rb8) with rb8 = rot(P[7], rb). Q[i] = rot(rc, P[i]) for the
+//    second chip of each bit.
 // 5. Correlation: c_i = rot(x_a, P[i]) or rot(x_b, Q[i]), the chip chosen in step 2
 //    (int16), h = sum c_i (int32), e2 = sum (c.re>>4)^2 + (c.im>>4)^2 (uint32);
 //    rho2 = coh_rho2(h, e2) in 1/1024. The first half stops here below 'thres' (the
@@ -50,7 +60,10 @@
 #define COH_HALF        56      // bits per half, each estimated on its own
 #define COH_BITS        112
 #define COH_CHIP_BITS   13      // chips below 2^13: rotated < 2^13 * sqrt(2), pair sums < 2^15
-#define COH_BLOCK_BITS  11      // block sums below 2^11: 7 rotated < 2^15
+#define COH_BLOCK_BITS  11      // byte block sums below 2^11: 7 rotated < 2^15
+#define COH_WIDE_BITS   10      // 2-bit block sums below 2^10: 14 rotated < 2^15
+#define COH_REF_LO      8       // fine bins searched around a wide peak: 8 .. 23 (+-30 kHz)
+#define COH_REF_HI      24
 #define COH_DATA_OFFSET 96      // 16 preamble chips * 6 (12 MHz positions)
 
 // info[] layout
@@ -61,7 +74,9 @@
 #define COH_INFO_FINE    4      // fine frequency index of bits 0..55 (0..COH_FINE_BINS-1, centre = 0 Hz)
 #define COH_INFO_RHO2B   5      // carrier coherence of bits 56..111
 #define COH_INFO_FINE2   6      // fine frequency index of bits 56..111
-#define COH_INFO_N       7
+#define COH_INFO_WIDE    7      // wide bin of bits 0..55 (0..COH_WBINS-1); frequency = wide + fine
+#define COH_INFO_WIDE2   8      // wide bin of bits 56..111
+#define COH_INFO_N       9
 
 // Samples the kernel reads: iq[0 .. 2 * coh_iq_needed(pos)) (I/Q pairs up to that index)
 static inline unsigned coh_iq_needed(int pos)
@@ -139,6 +154,33 @@ static inline int coh_argmax(const int32_t *p, int n)
         if (p[j] > p[best])
             best = j;
     return best;
+}
+
+// Stage 3b: the 28 2-bit blocks rotated by wide bin k, summed in fours, >> 2 (7 blocks
+// below 2^11, as the byte blocks of the fine search expect)
+static inline void coh_wide_regroup(const int16_t *wr, const int16_t *wi, int k, int16_t *br, int16_t *bi)
+{
+    for (int m = 0; m < COH_NBLOCKS; m++) {
+        int16_t re = 0, im = 0;
+        for (int q = 4 * m; q < 4 * m + 4; q++) {
+            const int16_t pr = coh_widet_re[k][q], pi = coh_widet_im[k][q];
+            re = (int16_t) (re + (int16_t) (coh_mulq15(wr[q], pr) - coh_mulq15(wi[q], pi)));
+            im = (int16_t) (im + (int16_t) (coh_mulq15(wr[q], pi) + coh_mulq15(wi[q], pr)));
+        }
+        br[m] = (int16_t) (re >> 2);
+        bi[m] = (int16_t) (im >> 2);
+    }
+}
+
+// Phasor step per bit (rb) and per chip (rc) for wide bin k and fine frequency f
+static inline void coh_steps(int k, int f, int16_t *rbr, int16_t *rbi, int16_t *rcr, int16_t *rci)
+{
+    const int16_t fbr = coh_fine_bit[f][0], fbi = coh_fine_bit[f][1], wbr = coh_wide_bit[k][0], wbi = coh_wide_bit[k][1];
+    const int16_t fcr = coh_fine_chip[f][0], fci = coh_fine_chip[f][1], wcr = coh_wide_chip[k][0], wci = coh_wide_chip[k][1];
+    *rbr = (int16_t) (coh_mulq15(fbr, wbr) - coh_mulq15(fbi, wbi));
+    *rbi = (int16_t) (coh_mulq15(fbr, wbi) + coh_mulq15(fbi, wbr));
+    *rcr = (int16_t) (coh_mulq15(fcr, wcr) - coh_mulq15(fci, wci));
+    *rci = (int16_t) (coh_mulq15(fcr, wci) + coh_mulq15(fci, wcr));
 }
 
 // rho2 = |h|^2 / (56 sum |c|^2) over a half in 1/1024; e2 holds sum |c >> 4|^2, so

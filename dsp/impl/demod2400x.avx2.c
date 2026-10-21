@@ -577,8 +577,25 @@ static inline __attribute__((always_inline)) __m128i coh_to16_avx2(const int32_t
 }
 
 // One half of the frame, bits first .. first+55, on its own (as coh_half_generic)
+// coh_wide_regroup, 8 blocks at a time: rotate by wide bin k (transposed table), sum
+// each 4 with horizontal adds (int16, wrapping, so any order gives the same), >> 2
+static inline __attribute__((always_inline))
+void coh_wide_regroup_sse(const int16_t *wr, const int16_t *wi, int k, int16_t *br, int16_t *bi)
+{
+    for (int q = 0; q < 32; q += 8) {
+        __m128i rr, ri;
+        coh_rot_sse(_mm_loadu_si128((const __m128i *) (wr + q)), _mm_loadu_si128((const __m128i *) (wi + q)),
+                    _mm_loadu_si128((const __m128i *) &coh_widet_re[k][q]), _mm_loadu_si128((const __m128i *) &coh_widet_im[k][q]), &rr, &ri);
+        const __m128i pr = _mm_hadd_epi16(rr, rr), pi = _mm_hadd_epi16(ri, ri);
+        const __m128i sr = _mm_srai_epi16(_mm_hadd_epi16(pr, pr), 2), si = _mm_srai_epi16(_mm_hadd_epi16(pi, pi), 2);
+        const int32_t vr = _mm_cvtsi128_si32(sr), vi = _mm_cvtsi128_si32(si);
+        memcpy(br + q / 4, &vr, 4);
+        memcpy(bi + q / 4, &vi, 4);
+    }
+}
+
 static int coh_half_avx2(const int16_t *iq, int pos, int first, unsigned thres, const __m256i *ci, const __m256i *cq,
-                         uint8_t *out, uint32_t *rho2_out, uint32_t *f_out, uint32_t *q)
+                         uint8_t *out, uint32_t *rho2_out, uint32_t *f_out, uint32_t *k_out, uint32_t *q)
 {
     int32_t a32r[COH_HALF], a32i[COH_HALF], b32r[COH_HALF], b32i[COH_HALF];
     int16_t ar[COH_HALF], ai[COH_HALF], br[COH_HALF], bi[COH_HALF];
@@ -606,10 +623,10 @@ static int coh_half_avx2(const int16_t *iq, int pos, int first, unsigned thres, 
 
     // Carrier sample of each bit: the chip with the larger magnitude (|a|^2 >= |b|^2,
     // by madd of interleaved (re, im)), as a 16-bit lane mask per bit that is set when
-    // b is taken; then block sums of the samples, normalised
+    // b is taken; then 2-bit block sums of the samples (madd with ones), normalised
     __m128i pick_b[COH_NBLOCKS];
-    int32_t bre[COH_NBLOCKS], bim[COH_NBLOCKS];
-    uint32_t bmax = 0;
+    int32_t sre[COH_WBLK], sim[COH_WBLK];
+    const __m128i one16 = _mm_set1_epi16(1);
     for (int m = 0; m < COH_NBLOCKS; m++) {
         const int i = m * COH_BLOCK;
         const __m128i xar = _mm_loadu_si128((const __m128i *) (ar + i)), xai = _mm_loadu_si128((const __m128i *) (ai + i));
@@ -618,31 +635,71 @@ static int coh_half_avx2(const int16_t *iq, int pos, int first, unsigned thres, 
         const __m128i bl = _mm_unpacklo_epi16(xbr, xbi), bh = _mm_unpackhi_epi16(xbr, xbi);
         pick_b[m] = _mm_packs_epi32(_mm_cmpgt_epi32(_mm_madd_epi16(bl, bl), _mm_madd_epi16(al, al)),
                                     _mm_cmpgt_epi32(_mm_madd_epi16(bh, bh), _mm_madd_epi16(ah, ah)));
-        bre[m] = coh_hsum_epi16_128(_mm_blendv_epi8(xar, xbr, pick_b[m]));
-        bim[m] = coh_hsum_epi16_128(_mm_blendv_epi8(xai, xbi, pick_b[m]));
-        if (coh_abs(bre[m]) > bmax) bmax = coh_abs(bre[m]);
-        if (coh_abs(bim[m]) > bmax) bmax = coh_abs(bim[m]);
+        _mm_storeu_si128((__m128i *) (sre + 4 * m), _mm_madd_epi16(_mm_blendv_epi8(xar, xbr, pick_b[m]), one16));
+        _mm_storeu_si128((__m128i *) (sim + 4 * m), _mm_madd_epi16(_mm_blendv_epi8(xai, xbi, pick_b[m]), one16));
     }
-    const int bs = coh_shift(bmax, COH_BLOCK_BITS);
+    uint32_t bmax = 0;
+    for (int m = 0; m < COH_WBLK; m++) {
+        if (coh_abs(sre[m]) > bmax) bmax = coh_abs(sre[m]);
+        if (coh_abs(sim[m]) > bmax) bmax = coh_abs(sim[m]);
+    }
+    const int bs = coh_shift(bmax, COH_WIDE_BITS);
+    int16_t wr[32] = { 0 }, wi[32] = { 0 };
+    for (int m = 0; m < COH_WBLK; m++) {
+        wr[m] = (int16_t) (sre[m] >> bs);
+        wi[m] = (int16_t) (sim[m] >> bs);
+    }
 
-    // Coarse search, 8 bins per vector; re^2 + im^2 by madd of interleaved (re, im)
-    int32_t p[COH_BINS_PAD];
-    for (int j = 0; j < COH_BINS_PAD; j += 8) {
-        __m128i sre = _mm_setzero_si128(), sim = _mm_setzero_si128();
-        for (int m = 0; m < COH_NBLOCKS; m++) {
-            __m128i rr, ri;
-            coh_rot_sse(_mm_set1_epi16((int16_t) (bre[m] >> bs)), _mm_set1_epi16((int16_t) (bim[m] >> bs)),
-                        _mm_loadu_si128((const __m128i *) &coh_bin_re[m][j]), _mm_loadu_si128((const __m128i *) &coh_bin_im[m][j]), &rr, &ri);
-            sre = _mm_add_epi16(sre, rr);
-            sim = _mm_add_epi16(sim, ri);
+    // Wide search, first stage: the peak of each 14-block piece over 16 wide bins, 8 per
+    // vector; re^2 + im^2 by madd of interleaved (re, im)
+    int kc[2];
+    for (int h = 0; h < 2; h++) {
+        int32_t p1[COH_WBINS];
+        for (int j = 0; j < COH_WBINS; j += 8) {
+            __m128i s16r = _mm_setzero_si128(), s16i = _mm_setzero_si128();
+            for (int m = 0; m < COH_WBLK / 2; m++) {
+                __m128i rr, ri;
+                coh_rot_sse(_mm_set1_epi16(wr[h * COH_WBLK / 2 + m]), _mm_set1_epi16(wi[h * COH_WBLK / 2 + m]),
+                            _mm_loadu_si128((const __m128i *) &coh_wide_re[m][j]), _mm_loadu_si128((const __m128i *) &coh_wide_im[m][j]), &rr, &ri);
+                s16r = _mm_add_epi16(s16r, rr);
+                s16i = _mm_add_epi16(s16i, ri);
+            }
+            const __m128i lo = _mm_unpacklo_epi16(s16r, s16i), hi = _mm_unpackhi_epi16(s16r, s16i);
+            _mm_storeu_si128((__m128i *) (p1 + j), _mm_madd_epi16(lo, lo));
+            _mm_storeu_si128((__m128i *) (p1 + j + 4), _mm_madd_epi16(hi, hi));
         }
-        const __m128i lo = _mm_unpacklo_epi16(sre, sim), hi = _mm_unpackhi_epi16(sre, sim);
-        _mm_storeu_si128((__m128i *) (p + j), _mm_madd_epi16(lo, lo));
-        _mm_storeu_si128((__m128i *) (p + j + 4), _mm_madd_epi16(hi, hi));
+        kc[h] = coh_argmax(p1, COH_WBINS);
     }
-    const int f = coh_fine_index(p, coh_argmax(p, COH_BINS));
-    const int16_t rcr = coh_fine_chip[f][0], rci = coh_fine_chip[f][1];
-    const int16_t rbr = coh_fine_bit[f][0], rbi = coh_fine_bit[f][1];
+
+    // Second stage: around each peak, the central fine bins; the stronger peak wins
+    int k = kc[0], f = 0;
+    int32_t pbest = -1;
+    for (int c = 0; c < (kc[1] != kc[0] ? 2 : 1); c++) {
+        int16_t br8[8], bi8[8];
+        coh_wide_regroup_sse(wr, wi, kc[c], br8, bi8);
+        int32_t p[COH_BINS_PAD] = { 0 };
+        for (int j = COH_REF_LO; j < COH_REF_HI; j += 8) {
+            __m128i s16r = _mm_setzero_si128(), s16i = _mm_setzero_si128();
+            for (int m = 0; m < COH_NBLOCKS; m++) {
+                __m128i rr, ri;
+                coh_rot_sse(_mm_set1_epi16(br8[m]), _mm_set1_epi16(bi8[m]),
+                            _mm_loadu_si128((const __m128i *) &coh_bin_re[m][j]), _mm_loadu_si128((const __m128i *) &coh_bin_im[m][j]), &rr, &ri);
+                s16r = _mm_add_epi16(s16r, rr);
+                s16i = _mm_add_epi16(s16i, ri);
+            }
+            const __m128i lo = _mm_unpacklo_epi16(s16r, s16i), hi = _mm_unpackhi_epi16(s16r, s16i);
+            _mm_storeu_si128((__m128i *) (p + j), _mm_madd_epi16(lo, lo));
+            _mm_storeu_si128((__m128i *) (p + j + 4), _mm_madd_epi16(hi, hi));
+        }
+        const int best = coh_argmax(p, COH_BINS);
+        if (p[best] > pbest) {
+            pbest = p[best];
+            k = kc[c];
+            f = coh_fine_index(p, best);
+        }
+    }
+    int16_t rbr, rbi, rcr, rci;
+    coh_steps(k, f, &rbr, &rbi, &rcr, &rci);
 
     // Phasors: first 8 one by one (as generic), then 8 at a time
     Pr[0] = 32767; Pi[0] = 0;
@@ -687,6 +744,7 @@ static int coh_half_avx2(const int16_t *iq, int pos, int first, unsigned thres, 
     const uint32_t rho2 = coh_rho2(h_re, h_im, (uint32_t) coh_hsum_epi32_128(e2v));
     *rho2_out = rho2;
     *f_out = (uint32_t) f;
+    *k_out = (uint32_t) k;
     if (rho2 < thres)
         return 0;
 
@@ -729,10 +787,10 @@ void STARCH_IMPL(coherent_decode, avx2) (const int16_t * restrict iq, int pos, u
     memset(out, 0, 14);
     memset(info, 0, COH_INFO_N * sizeof(*info));
 
-    if (!coh_half_avx2(iq, pos, 0, thres, ci, cq, out, &info[COH_INFO_RHO2], &info[COH_INFO_FINE], &info[COH_INFO_Q1]))
+    if (!coh_half_avx2(iq, pos, 0, thres, ci, cq, out, &info[COH_INFO_RHO2], &info[COH_INFO_FINE], &info[COH_INFO_WIDE], &info[COH_INFO_Q1]))
         return;
     info[COH_INFO_DECODED] = 1;
     // The second half whatever the DF says (as the magnitude decoder): scoring can
     // correct the DF bits, and every short DF is one bit from a long one
-    coh_half_avx2(iq, pos, COH_HALF, 0, ci, cq, out, &info[COH_INFO_RHO2B], &info[COH_INFO_FINE2], &info[COH_INFO_Q2]);
+    coh_half_avx2(iq, pos, COH_HALF, 0, ci, cq, out, &info[COH_INFO_RHO2B], &info[COH_INFO_FINE2], &info[COH_INFO_WIDE2], &info[COH_INFO_Q2]);
 }

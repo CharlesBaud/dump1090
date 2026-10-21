@@ -253,7 +253,7 @@ static inline coh_c16 coh_rot(coh_c16 x, coh_c16 p)
 // carrier frequency, channel h and rho2; if rho2 >= thres, slice its 56 bits into
 // out[first/8 ..] and return 1 with the quality in *q
 static int coh_half_generic(const int16_t *iq, int pos, int first, unsigned thres,
-                            uint8_t *out, uint32_t *rho2_out, uint32_t *f_out, uint32_t *q)
+                            uint8_t *out, uint32_t *rho2_out, uint32_t *f_out, uint32_t *k_out, uint32_t *q)
 {
     coh_c16 a[COH_HALF], b[COH_HALF], P[COH_HALF], Q[COH_HALF];
 
@@ -278,38 +278,68 @@ static int coh_half_generic(const int16_t *iq, int pos, int first, unsigned thre
     for (int i = 0; i < COH_HALF; i++)
         pick_a[i] = a[i].re * a[i].re + a[i].im * a[i].im >= b[i].re * b[i].re + b[i].im * b[i].im;
 
-    // Block sums of the carrier samples, normalised
-    int32_t bre[COH_NBLOCKS], bim[COH_NBLOCKS];
+    // 2-bit block sums of the carrier samples, normalised below 2^COH_WIDE_BITS
+    int32_t sre[COH_WBLK], sim[COH_WBLK];
     uint32_t bmax = 0;
-    for (int m = 0; m < COH_NBLOCKS; m++) {
+    for (int m = 0; m < COH_WBLK; m++) {
         int32_t re = 0, im = 0;
-        for (int i = m * COH_BLOCK; i < (m + 1) * COH_BLOCK; i++) {
+        for (int i = m * COH_WBITS; i < (m + 1) * COH_WBITS; i++) {
             re += pick_a[i] ? a[i].re : b[i].re;
             im += pick_a[i] ? a[i].im : b[i].im;
         }
-        bre[m] = re; bim[m] = im;
+        sre[m] = re; sim[m] = im;
         if (coh_abs(re) > bmax) bmax = coh_abs(re);
         if (coh_abs(im) > bmax) bmax = coh_abs(im);
     }
-    const int bs = coh_shift(bmax, COH_BLOCK_BITS);
-    coh_c16 blk[COH_NBLOCKS];
-    for (int m = 0; m < COH_NBLOCKS; m++)
-        blk[m] = (coh_c16) { (int16_t) (bre[m] >> bs), (int16_t) (bim[m] >> bs) };
-
-    // Coarse search
-    int32_t p[COH_BINS];
-    for (int j = 0; j < COH_BINS; j++) {
-        int16_t re = 0, im = 0;
-        for (int m = 0; m < COH_NBLOCKS; m++) {
-            const coh_c16 r = coh_rot(blk[m], (coh_c16) { coh_bin_re[m][j], coh_bin_im[m][j] });
-            re = (int16_t) (re + r.re);
-            im = (int16_t) (im + r.im);
-        }
-        p[j] = re * re + im * im;
+    const int bs = coh_shift(bmax, COH_WIDE_BITS);
+    int16_t wr[COH_WBLK], wi[COH_WBLK];
+    for (int m = 0; m < COH_WBLK; m++) {
+        wr[m] = (int16_t) (sre[m] >> bs);
+        wi[m] = (int16_t) (sim[m] >> bs);
     }
-    const int f = coh_fine_index(p, coh_argmax(p, COH_BINS));
-    const coh_c16 rc = { coh_fine_chip[f][0], coh_fine_chip[f][1] };
-    const coh_c16 rb = { coh_fine_bit[f][0], coh_fine_bit[f][1] };
+
+    // Wide search, first stage: the peak of each 14-block piece over 16 wide bins
+    int kc[2];
+    for (int h = 0; h < 2; h++) {
+        int32_t p1[COH_WBINS];
+        for (int k = 0; k < COH_WBINS; k++) {
+            int16_t re = 0, im = 0;
+            for (int m = 0; m < COH_WBLK / 2; m++) {
+                const coh_c16 r = coh_rot((coh_c16) { wr[h * COH_WBLK / 2 + m], wi[h * COH_WBLK / 2 + m] },
+                                          (coh_c16) { coh_wide_re[m][k], coh_wide_im[m][k] });
+                re = (int16_t) (re + r.re);
+                im = (int16_t) (im + r.im);
+            }
+            p1[k] = re * re + im * im;
+        }
+        kc[h] = coh_argmax(p1, COH_WBINS);
+    }
+
+    // Second stage: around each peak, the central fine bins; the stronger peak wins
+    int k = kc[0], f = 0;
+    int32_t pbest = -1;
+    for (int c = 0; c < (kc[1] != kc[0] ? 2 : 1); c++) {
+        int16_t br8[COH_NBLOCKS], bi8[COH_NBLOCKS];
+        coh_wide_regroup(wr, wi, kc[c], br8, bi8);
+        int32_t p[COH_BINS] = { 0 };
+        for (int j = COH_REF_LO; j < COH_REF_HI; j++) {
+            int16_t re = 0, im = 0;
+            for (int m = 0; m < COH_NBLOCKS; m++) {
+                const coh_c16 r = coh_rot((coh_c16) { br8[m], bi8[m] }, (coh_c16) { coh_bin_re[m][j], coh_bin_im[m][j] });
+                re = (int16_t) (re + r.re);
+                im = (int16_t) (im + r.im);
+            }
+            p[j] = re * re + im * im;
+        }
+        const int best = coh_argmax(p, COH_BINS);
+        if (p[best] > pbest) {
+            pbest = p[best];
+            k = kc[c];
+            f = coh_fine_index(p, best);
+        }
+    }
+    coh_c16 rc, rb;
+    coh_steps(k, f, &rb.re, &rb.im, &rc.re, &rc.im);
 
     // Phasors per bit: P[i] = e^{-j 2 w i} de-rotates bit i, Q[i] its second chip
     // (half a bit later). Built in blocks of 8 so SIMD versions can do 8 at a time
@@ -337,6 +367,7 @@ static int coh_half_generic(const int16_t *iq, int pos, int first, unsigned thre
     const uint32_t rho2 = coh_rho2(hre, him, e2);
     *rho2_out = rho2;
     *f_out = (uint32_t) f;
+    *k_out = (uint32_t) k;
     if (rho2 < thres)
         return 0;
 
@@ -364,10 +395,10 @@ void STARCH_IMPL(coherent_decode, generic) (const int16_t * restrict iq, int pos
     memset(out, 0, 14);
     memset(info, 0, COH_INFO_N * sizeof(*info));
 
-    if (!coh_half_generic(iq, pos, 0, thres, out, &info[COH_INFO_RHO2], &info[COH_INFO_FINE], &info[COH_INFO_Q1]))
+    if (!coh_half_generic(iq, pos, 0, thres, out, &info[COH_INFO_RHO2], &info[COH_INFO_FINE], &info[COH_INFO_WIDE], &info[COH_INFO_Q1]))
         return;
     info[COH_INFO_DECODED] = 1;
     // The second half whatever the DF says (as the magnitude decoder): scoring can
     // correct the DF bits, and every short DF is one bit from a long one
-    coh_half_generic(iq, pos, COH_HALF, 0, out, &info[COH_INFO_RHO2B], &info[COH_INFO_FINE2], &info[COH_INFO_Q2]);
+    coh_half_generic(iq, pos, COH_HALF, 0, out, &info[COH_INFO_RHO2B], &info[COH_INFO_FINE2], &info[COH_INFO_WIDE2], &info[COH_INFO_Q2]);
 }

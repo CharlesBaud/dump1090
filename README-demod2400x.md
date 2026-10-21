@@ -17,7 +17,8 @@ In outline:
 * DC removal and conversion to 12-bit I/Q in the input converter, so the
   FIFO keeps I/Q samples for later processing.
 * A 5-phase polyphase FIR upsamples to 12 MHz (least-squares fractional-delay
-  coefficients, all integer arithmetic), then takes the magnitude.
+  coefficients, all integer arithmetic), then stores an 8-bit log of the power
+  (8 × log2, from the bits of a float conversion: no square root).
 * A preamble metric at every 12 MHz position, and the 112 bits are decoded
   from the best of the neighbouring positions.
 * The arrival time is refined by correlating the decoded chips with the
@@ -124,6 +125,11 @@ demodulation (see
 about 31% of one core. These results come from
 one receiver and a one-minute capture; longer side-by-side runs are in
 progress.
+
+With the 8-bit log power (the table above was measured before it), the Pi 5
+demodulates the 60 s captures in 20–29% less time, and a Pi 3B decodes the
+first 20 s of a capture in 24% less CPU (8.96 s against 11.75 s), with
+0.1–0.7% more messages and the same aircraft.
 
 ## Compilers
 

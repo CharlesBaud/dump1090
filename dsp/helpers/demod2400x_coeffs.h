@@ -50,7 +50,8 @@ static const int8_t upsample_coeffs[5][8] = {
 
 // Filter outputs are rounded by (x + 2^(UPSAMPLE_SHIFT-1)) >> UPSAMPLE_SHIFT. With 12-bit input
 // (|x| <= 2048) each component is at most 2048 * UPSAMPLE_ABS_SUM >> UPSAMPLE_SHIFT, and the
-// power I^2 + Q^2 must stay below 2^31: signed 32-bit arithmetic and demod_isqrt()'s range.
+// power I^2 + Q^2 must stay below 2^31: signed 32-bit arithmetic, and P + 1 stays a positive int32 for AVX2's
+// signed conversion in demod_log8().
 #define UPSAMPLE_SHIFT 4
 #define UPSAMPLE_ROUND (1 << (UPSAMPLE_SHIFT - 1))
 #define UPSAMPLE_MAX_COMPONENT ((2048LL * UPSAMPLE_ABS_SUM + UPSAMPLE_ROUND) >> UPSAMPLE_SHIFT)
@@ -101,5 +102,16 @@ static inline __attribute__((always_inline))  uint32_t demod_isqrt(uint32_t x)
 #ifndef DEMOD_SQRT
 #define DEMOD_SQRT(x) demod_isqrt(x)
 #endif
+
+// 8-bit log of the upsampler power, L ~ 8 log2(P + 1): the float of P + 1 is
+// 2^e (1 + f), so its bits >> 20 are 8 (e + 127) + the top 3 bits of f, and
+// L = 8e + floor(8f). f is the linear mantissa, at most 0.69 of a step below
+// 8 log2(1 + f). The conversion rounds to nearest in C, NEON and AVX2 alike, so
+// all versions give the same codes. P < 2^31, so L <= 247.
+static inline __attribute__((always_inline)) uint8_t demod_log8(uint32_t pwr)
+{
+    union { float f; uint32_t u; } v = { .f = (float) (pwr + 1) };
+    return (uint8_t) ((v.u >> 20) - (127u << 3));
+}
 
 #endif

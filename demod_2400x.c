@@ -93,7 +93,7 @@ static unsigned bitErrors(const uint8_t *a, const uint8_t *b, int bits)
 #endif /* DEMOD_2400X_COHERENT */
 
 // New samples per pass. Each FIFO buffer (about 131k samples) is demodulated in
-// pieces this size, so the 12 MHz data (10 bytes per input sample) stays in the
+// pieces this size, so the 12 MHz data (5 bytes per input sample) stays in the
 // L2 cache between the upsample, the preamble search and the decodes. Only this
 // demodulator: the FIFO, the SDR drivers and the stock demodulator are unchanged.
 #define DEMOD_BLOCK 32768
@@ -102,14 +102,12 @@ static unsigned bitErrors(const uint8_t *a, const uint8_t *b, int bits)
 // before the true start of the preamble
 #define UPSAMPLE_DELAY 15
 
-#ifdef USE_MAGNITUDE
+// The 12 MHz samples are 8-bit log powers (demod_log8()), whatever USE_MAGNITUDE says
 #ifndef PEAMBLE_THRES
-#define PEAMBLE_THRES 28      // 256 * minp / (minp + gap + 1)
+#define PEAMBLE_THRES 86      // (12 L(minp) - sum L(gaps)) / 2, see demod2400x_dsp.h
 #endif
-#define DATA_THRES    65
-#else
-#define PEAMBLE_THRES 47
-#define DATA_THRES    150
+#ifndef DATA_THRES
+#define DATA_THRES    65      // decode_bits() quality, see demod2400x_dsp.h
 #endif
 #define DATA2_THRES   ((4*DATA_THRES)/5)
 
@@ -118,7 +116,7 @@ static unsigned bitErrors(const uint8_t *a, const uint8_t *b, int bits)
 struct staticdata_t {
 
     int usize;
-    uint16_t *udata;
+    uint8_t *udata;
 
     int msize;
     uint8_t *metric;
@@ -167,7 +165,7 @@ static void dumpReport(void)
 }
 
 static void dumpFrame(const int16_t *iq, unsigned iq_len, const struct candidate *c, int accepted,
-                      int score, uint32_t addr, const uint8_t *good_msg, const uint16_t *udata, int nt)
+                      int score, uint32_t addr, const uint8_t *good_msg, const uint8_t *udata, int nt)
 {
     static int init;
     if (!init) {
@@ -186,13 +184,13 @@ static void dumpFrame(const int16_t *iq, unsigned iq_len, const struct candidate
     if (coherentChips(iq, iq_len, c->pos, chips, COHERENT_CHIPS) < 0)
         return;
 
-    // Same rounding and sqrt as upsample12: must equal what the magnitude decoder saw
+    // Same rounding and log as upsample12: must equal what the magnitude decoder saw
     const int stride = NU_STRIDE(nt);
     for (int k = 0; k < COHERENT_CHIPS; k++) {
         const int t = c->pos + 6 * k;
         const int32_t si = (chips[k][0] + UPSAMPLE_ROUND) >> UPSAMPLE_SHIFT;
         const int32_t sq = (chips[k][1] + UPSAMPLE_ROUND) >> UPSAMPLE_SHIFT;
-        const unsigned m = demod_isqrt((uint32_t) (si * si) + (uint32_t) (sq * sq));
+        const unsigned m = demod_log8((uint32_t) (si * si) + (uint32_t) (sq * sq));
         dump.checked++;
         if (t < nt && m != udata[(t % 6) * stride + t / 6])
             dump.mismatches++;
@@ -238,7 +236,7 @@ static int allocateBuffers(struct staticdata_t *stdata, int totalLength) {
    int stride = NU_STRIDE(nt);
    int mt = METRIC_SIZE(nt);
 
-   if (allocBuffer(6*stride*sizeof(uint16_t), &stdata->usize, (void **)&stdata->udata) < 0) return -1;
+   if (allocBuffer(6*stride*sizeof(uint8_t), &stdata->usize, (void **)&stdata->udata) < 0) return -1;
    if (allocBuffer(mt*sizeof(uint8_t), &stdata->msize, (void **)&stdata->metric) < 0) return -1;
    if (allocBuffer(totalLength*sizeof(uint16_t), &stdata->asize, (void **)&stdata->abuf) < 0) return -1;
 
@@ -295,7 +293,7 @@ static void checkMetric(const uint8_t *metric, int mlen) {
 
 // Decode 56 bits starting at metric position 'pos'; returns a quality score (0..256)
 static inline __attribute__((always_inline))
-unsigned decodeShortAdbsData(int pos, const uint16_t * restrict udata, int nt, uint8_t * restrict msg)
+unsigned decodeShortAdbsData(int pos, const uint8_t * restrict udata, int nt, uint8_t * restrict msg)
 {
     unsigned quality;
     starch_decode_bits(&udata[(pos % 6) * NU_STRIDE(nt) + pos / 6 + 16], SHORT_FRAME / 8, msg, &quality);
@@ -327,7 +325,7 @@ static inline __attribute__((always_inline)) int anyAboveThres8(const uint8_t *m
 
 
 // Try the peak and its two neighbours, keep the one whose first 56 bits look best
-static void bestPhase(int peak, const uint16_t *udata, int nt, struct candidate *c)
+static void bestPhase(int peak, const uint8_t *udata, int nt, struct candidate *c)
 {
     uint8_t msg[MODES_SHORT_MSG_BYTES];
 
@@ -345,7 +343,7 @@ static void bestPhase(int peak, const uint16_t *udata, int nt, struct candidate 
 // Demodulate the second 56 bits whatever the DF says: scoreModesMessage() can
 // correct the DF field, including the bit that selects 56 or 112 bits, so the
 // frame length is only known after scoring
-static void demodFrame(struct candidate *c, const uint16_t *udata, int nt)
+static void demodFrame(struct candidate *c, const uint8_t *udata, int nt)
 {
     c->quality2 = decodeShortAdbsData(c->pos + 12 * SHORT_FRAME, udata, nt, c->msg + MODES_SHORT_MSG_BYTES);
 }
@@ -377,9 +375,15 @@ static double signalPower(const int16_t *iq, int pos, int bits, double *energy)
 // (from the corrected message) correlate best with the upsampled signal, i.e. the
 // chip centres. bestPhase() picks 'pos' by bit quality, which is flat across about
 // 3 samples on a clean pulse, so 'pos' alone is a poor time estimate for MLAT.
-static int fineTiming(int pos, const uint8_t *msg, int bits, const uint16_t *udata, int nt)
+// The correlation is on magnitudes, 2^(L/16), so weak noisy chips don't count as much as
+// strong ones (once per accepted frame, so a table is fine)
+static int fineTiming(int pos, const uint8_t *msg, int bits, const uint8_t *udata, int nt)
 {
     static const int order[5] = { 0, -1, 1, -2, 2 };   // ties go to the nearest to 'pos'
+    static uint16_t mag[256];
+    if (!mag[255])
+        for (int l = 0; l < 256; l++)
+            mag[l] = (uint16_t) lrint(exp2(l / 16.0));
     int stride = NU_STRIDE(nt);
     int best = pos;
     int32_t best_corr = INT32_MIN;
@@ -389,11 +393,11 @@ static int fineTiming(int pos, const uint8_t *msg, int bits, const uint16_t *uda
 
     for (int k = 0; k < 5; k++) {
         int t = pos + order[k];
-        const uint16_t *u = &udata[(t % 6) * stride + t / 6 + 16];    // first data chip
+        const uint8_t *u = &udata[(t % 6) * stride + t / 6 + 16];     // first data chip
         int32_t corr = 0;
 
         for (int i = 0; i < bits; i++) {
-            int d = u[2 * i] - u[2 * i + 1];                            // first chip - second
+            int d = mag[u[2 * i]] - mag[u[2 * i + 1]];                  // first chip - second
             corr += ((msg[i >> 3] >> (7 - (i & 7))) & 1) ? d : -d;
         }
         if (corr > best_corr) {
@@ -609,19 +613,6 @@ static double searchFrames(const struct mag_buf *mag, struct staticdata_t *st, i
 }
 
 
-#ifndef USE_MAGNITUDE
-#define DEMOD_SHIFT_ADJ 3
-static int powerShift(double mean_power)      // mean_power: fraction of 12-bit full scale
-{
-    if (!(mean_power > 0))
-        return 0;
-    int e;
-    frexp(mean_power, &e);                    // mean_power = m * 2^e, 0.5 <= m < 1
-    int shift = (e - 1) + 22 + DEMOD_SHIFT_ADJ;           // 2048^2 = 2^22
-    return shift < 0 ? 0 : shift;
-}
-#endif
-
 // Demodulate 2400
 //#define CHECK_USAMP
 //#define CHECK_POW
@@ -638,15 +629,10 @@ static void demodulateBlock(struct mag_buf *mag, struct staticdata_t *st)
    if (!st->prev_mlen || (mag->flags & MAGBUF_DISCONTINUOUS))
        st->next_start = 0;
 
-#ifdef USE_MAGNITUDE
-   int pshift = 0;                              // magnitude needs no gain shift
-#else
-   int pshift = powerShift(mag->mean_power);
-#endif
    st->prev_mlen = newlen;
 
    // Upsample the whole buffer
-   int ulen = starch_upsample12((const int16_t *) mag->data, (int) dlen, pshift, st->udata);
+   int ulen = starch_upsample12((const int16_t *) mag->data, (int) dlen, st->udata);
 
 #ifdef CHECK_POW
    int max = 0;
@@ -654,7 +640,7 @@ static void demodulateBlock(struct mag_buf *mag, struct staticdata_t *st)
        int mm = st->udata[i];
        if (mm > max) max = mm;
    }
-   fprintf(stderr, "pshift = %d, Max Power = %d\n", pshift, max);
+   fprintf(stderr, "Max log power = %d\n", max);
 #endif
 #ifdef CHECK_USAMP
    int stride = NU_STRIDE(ulen);

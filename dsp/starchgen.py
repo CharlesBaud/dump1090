@@ -44,18 +44,18 @@ gen.add_function(
     argtypes = ['const sc16_t *', 'uint16_t *', 'unsigned', 'const int32_t *', 'int32_t *', 'double *', 'double *'])
 gen.add_function(
    name = 'upsample12',
-   argtypes = ['const int16_t *', 'int', 'int', 'uint16_t *'],
+   argtypes = ['const int16_t *', 'int', 'uint8_t *'],
    returntype = 'int')
 gen.add_function(
    name = 'locate_preamble',
-   argtypes = ['const uint16_t *', 'int', 'unsigned', 'uint8_t *'],
+   argtypes = ['const uint8_t *', 'int', 'unsigned', 'uint8_t *'],
    returntype = 'int')       
 gen.add_function(
    name = 'coherent_decode',
    argtypes = ['const int16_t *', 'int', 'unsigned', 'uint8_t *', 'uint32_t *'])
 gen.add_function(
    name = 'decode_bits',
-   argtypes = ['const uint16_t *', 'unsigned', 'uint8_t *', 'unsigned *'])
+   argtypes = ['const uint8_t *', 'unsigned', 'uint8_t *', 'unsigned *'])
 
 gen.add_flavor(
     name = 'generic',

@@ -21,7 +21,6 @@
 #include "dsp/helpers/demod2400x_coherent.h"
 
 #define DEMOD2400X_BENCH_LEN   131072   // one FIFO buffer of I/Q samples
-#define DEMOD2400X_BENCH_SHIFT 8
 
 // All implementations write to the same output buffer in turn. The verify
 // functions refill it with this pattern after checking, so values left by the
@@ -91,12 +90,12 @@ void STARCH_BENCHMARK(upsample12) (void)
     const int len = DEMOD2400X_BENCH_LEN;
     int16_t *in = demod2400x_make_iq(len);
     int16_t *in_full = demod2400x_make_iq_full(len);
-    uint16_t *out = calloc(demod2400x_upsample_size(len), sizeof(*out));
+    uint8_t *out = calloc(demod2400x_upsample_size(len), sizeof(*out));
 
     if (in && in_full && out) {
         memset(out, DEMOD2400X_BENCH_POISON, demod2400x_upsample_size(len) * sizeof(*out));
-        STARCH_BENCHMARK_RUN( upsample12, in, len, DEMOD2400X_BENCH_SHIFT, out );
-        STARCH_BENCHMARK_RUN( upsample12, in_full, len, DEMOD2400X_BENCH_SHIFT, out );
+        STARCH_BENCHMARK_RUN( upsample12, in, len, out );
+        STARCH_BENCHMARK_RUN( upsample12, in_full, len, out );
     }
     free(in_full);
 
@@ -104,21 +103,20 @@ void STARCH_BENCHMARK(upsample12) (void)
     free(out);
 }
 
-bool STARCH_BENCHMARK_VERIFY(upsample12) (const int16_t *in, int len, int shift, uint16_t *out)
+bool STARCH_BENCHMARK_VERIFY(upsample12) (const int16_t *in, int len, uint8_t *out)
 {
     size_t size = demod2400x_upsample_size(len);
-    uint16_t *ref = malloc(size * sizeof(*ref));
+    uint8_t *ref = malloc(size * sizeof(*ref));
     if (!ref)
         return false;
 
     memset(ref, DEMOD2400X_BENCH_POISON, size * sizeof(*ref));
-    starch_upsample12_generic_generic(in, len, shift, ref);
+    starch_upsample12_generic_generic(in, len, ref);
 
     bool okay = true;
 
-#ifdef USE_MAGNITUDE
-    // Check the reference itself in 64-bit arithmetic, so an overflow can't hide
-    // by being the same in every implementation
+    // Check the reference itself, the power in 64-bit arithmetic, so an overflow can't
+    // hide by being the same in every implementation
     int stride = NU_STRIDE(NU_SAMP(len));
     for (int n = 0; n + 8 <= len && okay; ++n) {
         for (int c = 0; c < 5; ++c) {
@@ -130,33 +128,19 @@ bool STARCH_BENCHMARK_VERIFY(upsample12) (const int16_t *in, int len, int shift,
             si = (si + UPSAMPLE_ROUND) >> UPSAMPLE_SHIFT;
             sq = (sq + UPSAMPLE_ROUND) >> UPSAMPLE_SHIFT;
             int64_t pwr = si * si + sq * sq;
-            int64_t mag = (int64_t) sqrt((double) pwr);     // exact floor(sqrt) after the fix-ups
-            while (mag * mag > pwr)
-                --mag;
-            while ((mag + 1) * (mag + 1) <= pwr)
-                ++mag;
             int o = 5 * n + c;
-            if (ref[(o % 6) * stride + o / 6] != mag) {
-                fprintf(stderr, "reference check failed: window %d phase %d: %u, expected %lld\n",
-                        n, c, ref[(o % 6) * stride + o / 6], (long long) mag);
+            if (pwr >= (1LL << 31) || ref[(o % 6) * stride + o / 6] != demod_log8((uint32_t) pwr)) {
+                fprintf(stderr, "reference check failed: window %d phase %d: %u, power %lld\n",
+                        n, c, ref[(o % 6) * stride + o / 6], (long long) pwr);
                 okay = false;
                 break;
             }
         }
     }
-#endif
 
-    // SIMD magnitudes leave out the exact-integer fix-ups of the square root, so they
-    // may be one either side of generic's exact floor(sqrt(I^2 + Q^2))
-#ifdef USE_MAGNITUDE
-    const int tol = 1;
-#else
-    const int tol = 0;
-#endif
-    for (size_t k = 0; k < size; ++k) {
-        const int d = (int) out[k] - (int) ref[k];
-        if (d < -tol || d > tol) {
-            fprintf(stderr, "verification failed: out[%zu]=%u, expected %u (+-%d)\n", k, out[k], ref[k], tol);
+    for (size_t k = 0; k < size && okay; ++k) {
+        if (out[k] != ref[k]) {
+            fprintf(stderr, "verification failed: out[%zu]=%u, expected %u\n", k, out[k], ref[k]);
             okay = false;
             break;
         }
@@ -172,16 +156,16 @@ void STARCH_BENCHMARK(locate_preamble) (void)
 {
     const int len = DEMOD2400X_BENCH_LEN;
     int16_t *iq = demod2400x_make_iq(len);
-    uint16_t *pp = calloc(demod2400x_upsample_size(len), sizeof(*pp));
+    uint8_t *pp = calloc(demod2400x_upsample_size(len), sizeof(*pp));
     uint8_t *mm = NULL;
 
     if (iq && pp) {
-        int nt = starch_upsample12_generic_generic(iq, len, DEMOD2400X_BENCH_SHIFT, pp);
+        int nt = starch_upsample12_generic_generic(iq, len, pp);
         if ((mm = malloc((size_t) nt))) {
-            // thres 0 gives every metric; 50 zeroes most of them (noise) without dividing
+            // thres 0 gives every metric; 88 (the decoder's) zeroes most of them (noise)
             memset(mm, DEMOD2400X_BENCH_POISON, (size_t) nt);
             STARCH_BENCHMARK_RUN( locate_preamble, pp, nt, 0, mm );
-            STARCH_BENCHMARK_RUN( locate_preamble, pp, nt, 50, mm );
+            STARCH_BENCHMARK_RUN( locate_preamble, pp, nt, 88, mm );
         }
     }
 
@@ -190,7 +174,7 @@ void STARCH_BENCHMARK(locate_preamble) (void)
     free(mm);
 }
 
-bool STARCH_BENCHMARK_VERIFY(locate_preamble) (const uint16_t *pp, int nt, unsigned thres, uint8_t *mm)
+bool STARCH_BENCHMARK_VERIFY(locate_preamble) (const uint8_t *pp, int nt, unsigned thres, uint8_t *mm)
 {
     uint8_t *ref = malloc((size_t) nt);
     if (!ref)
@@ -405,14 +389,14 @@ void STARCH_BENCHMARK(decode_bits) (void)
     const int len = DEMOD2400X_BENCH_LEN;
     int16_t *in = demod2400x_make_iq(len);
     int16_t *in_full = demod2400x_make_iq_full(len);
-    uint16_t *pp = calloc(demod2400x_upsample_size(len), sizeof(*pp));
-    uint16_t *pp_full = calloc(demod2400x_upsample_size(len), sizeof(*pp_full));
+    uint8_t *pp = calloc(demod2400x_upsample_size(len), sizeof(*pp));
+    uint8_t *pp_full = calloc(demod2400x_upsample_size(len), sizeof(*pp_full));
     uint8_t msg[DECODE_BITS_MAX_BYTES];
     unsigned quality;
 
     if (in && in_full && pp && pp_full) {
-        starch_upsample12_generic_generic(in, len, DEMOD2400X_BENCH_SHIFT, pp);
-        starch_upsample12_generic_generic(in_full, len, DEMOD2400X_BENCH_SHIFT, pp_full);
+        starch_upsample12_generic_generic(in, len, pp);
+        starch_upsample12_generic_generic(in_full, len, pp_full);
         memset(msg, DEMOD2400X_BENCH_POISON, sizeof(msg));
         STARCH_BENCHMARK_RUN( decode_bits, pp + 1001, 7, msg, &quality );
         STARCH_BENCHMARK_RUN( decode_bits, pp_full + 3, DECODE_BITS_MAX_BYTES, msg, &quality );
@@ -424,7 +408,7 @@ void STARCH_BENCHMARK(decode_bits) (void)
     free(pp_full);
 }
 
-bool STARCH_BENCHMARK_VERIFY(decode_bits) (const uint16_t *p, unsigned nbytes, uint8_t *msg, unsigned *quality)
+bool STARCH_BENCHMARK_VERIFY(decode_bits) (const uint8_t *p, unsigned nbytes, uint8_t *msg, unsigned *quality)
 {
     uint8_t ref[DECODE_BITS_MAX_BYTES];
     unsigned ref_quality = ~0U;

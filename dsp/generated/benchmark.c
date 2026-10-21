@@ -299,12 +299,12 @@ static void starch_benchmark_run_count_above_u16( const uint16_t * arg0, unsigne
 
 /* prototypes for benchmark helpers provided by user code */
 void starch_decode_bits_benchmark (void);
-bool starch_decode_bits_benchmark_verify ( const uint16_t * arg0, unsigned arg1, uint8_t * arg2, unsigned * arg3 );
+bool starch_decode_bits_benchmark_verify ( const uint8_t * arg0, unsigned arg1, uint8_t * arg2, unsigned * arg3 );
 
 /* prototype the benchmarking function so that we can build with -Wmissing-declarations */
 void starch_decode_bits_benchmark(void);
 
-static void starch_benchmark_one_decode_bits( starch_decode_bits_regentry * _entry, const uint16_t * arg0, unsigned arg1, uint8_t * arg2, unsigned * arg3 )
+static void starch_benchmark_one_decode_bits( starch_decode_bits_regentry * _entry, const uint8_t * arg0, unsigned arg1, uint8_t * arg2, unsigned * arg3 )
 {
     fprintf(stderr, "  %-40s  ", _entry->name);
 
@@ -403,7 +403,7 @@ static void starch_benchmark_one_decode_bits( starch_decode_bits_regentry * _ent
     ++starch_benchmark_result_count;
 }
 
-static void starch_benchmark_run_decode_bits( const uint16_t * arg0, unsigned arg1, uint8_t * arg2, unsigned * arg3 )
+static void starch_benchmark_run_decode_bits( const uint8_t * arg0, unsigned arg1, uint8_t * arg2, unsigned * arg3 )
 {
     for (starch_decode_bits_regentry *_entry = starch_decode_bits_registry; _entry->name; ++_entry) {
         starch_benchmark_one_decode_bits( _entry, arg0, arg1, arg2, arg3 );
@@ -751,12 +751,12 @@ static void starch_benchmark_run_iqdata_conv_uc8( const uc8_t * arg0, uint16_t *
 
 /* prototypes for benchmark helpers provided by user code */
 void starch_locate_preamble_benchmark (void);
-bool starch_locate_preamble_benchmark_verify ( const uint16_t * arg0, int arg1, unsigned arg2, uint8_t * arg3 );
+bool starch_locate_preamble_benchmark_verify ( const uint8_t * arg0, int arg1, unsigned arg2, uint8_t * arg3 );
 
 /* prototype the benchmarking function so that we can build with -Wmissing-declarations */
 void starch_locate_preamble_benchmark(void);
 
-static void starch_benchmark_one_locate_preamble( starch_locate_preamble_regentry * _entry, const uint16_t * arg0, int arg1, unsigned arg2, uint8_t * arg3 )
+static void starch_benchmark_one_locate_preamble( starch_locate_preamble_regentry * _entry, const uint8_t * arg0, int arg1, unsigned arg2, uint8_t * arg3 )
 {
     fprintf(stderr, "  %-40s  ", _entry->name);
 
@@ -855,7 +855,7 @@ static void starch_benchmark_one_locate_preamble( starch_locate_preamble_regentr
     ++starch_benchmark_result_count;
 }
 
-static void starch_benchmark_run_locate_preamble( const uint16_t * arg0, int arg1, unsigned arg2, uint8_t * arg3 )
+static void starch_benchmark_run_locate_preamble( const uint8_t * arg0, int arg1, unsigned arg2, uint8_t * arg3 )
 {
     for (starch_locate_preamble_regentry *_entry = starch_locate_preamble_registry; _entry->name; ++_entry) {
         starch_benchmark_one_locate_preamble( _entry, arg0, arg1, arg2, arg3 );
@@ -1429,12 +1429,12 @@ static void starch_benchmark_run_mean_power_u16( const uint16_t * arg0, unsigned
 
 /* prototypes for benchmark helpers provided by user code */
 void starch_upsample12_benchmark (void);
-bool starch_upsample12_benchmark_verify ( const int16_t * arg0, int arg1, int arg2, uint16_t * arg3 );
+bool starch_upsample12_benchmark_verify ( const int16_t * arg0, int arg1, uint8_t * arg2 );
 
 /* prototype the benchmarking function so that we can build with -Wmissing-declarations */
 void starch_upsample12_benchmark(void);
 
-static void starch_benchmark_one_upsample12( starch_upsample12_regentry * _entry, const int16_t * arg0, int arg1, int arg2, uint16_t * arg3 )
+static void starch_benchmark_one_upsample12( starch_upsample12_regentry * _entry, const int16_t * arg0, int arg1, uint8_t * arg2 )
 {
     fprintf(stderr, "  %-40s  ", _entry->name);
 
@@ -1461,10 +1461,10 @@ static void starch_benchmark_one_upsample12( starch_upsample12_regentry * _entry
 
     /* initial warmup */
     for (unsigned _loop = 0; _loop < starch_benchmark_warmup_loops; ++_loop)
-        _entry->callable ( arg0, arg1, arg2, arg3 );
+        _entry->callable ( arg0, arg1, arg2 );
 
     /* verify correctness of the output */
-    if (! starch_upsample12_benchmark_verify ( arg0, arg1, arg2, arg3 )) {
+    if (! starch_upsample12_benchmark_verify ( arg0, arg1, arg2 )) {
         fprintf(stderr, "skipped (verification failed)\n");
         starch_benchmark_validation_failed = true;
         return;
@@ -1482,7 +1482,7 @@ static void starch_benchmark_one_upsample12( starch_upsample12_regentry * _entry
         _loops *= 2;
         starch_benchmark_get_time(&_start);
         for (uint64_t _loop = 0; _loop < _loops; ++_loop)
-            _entry->callable ( arg0, arg1, arg2, arg3 );
+            _entry->callable ( arg0, arg1, arg2 );
         starch_benchmark_get_time(&_end);
         _elapsed = starch_benchmark_elapsed(&_start, &_end);
     }
@@ -1496,7 +1496,7 @@ static void starch_benchmark_one_upsample12( starch_upsample12_regentry * _entry
     for (unsigned _iter = 0; _iter < starch_benchmark_iterations; ++_iter) {
         starch_benchmark_get_time(&_start);
         for (uint64_t _loop = 0; _loop < _loops; ++_loop)
-            _entry->callable ( arg0, arg1, arg2, arg3 );
+            _entry->callable ( arg0, arg1, arg2 );
         starch_benchmark_get_time(&_end);
         uint64_t _elapsed_one = starch_benchmark_elapsed(&_start, &_end);
         if (_elapsed_one < _elapsed_min)
@@ -1533,10 +1533,10 @@ static void starch_benchmark_one_upsample12( starch_upsample12_regentry * _entry
     ++starch_benchmark_result_count;
 }
 
-static void starch_benchmark_run_upsample12( const int16_t * arg0, int arg1, int arg2, uint16_t * arg3 )
+static void starch_benchmark_run_upsample12( const int16_t * arg0, int arg1, uint8_t * arg2 )
 {
     for (starch_upsample12_regentry *_entry = starch_upsample12_registry; _entry->name; ++_entry) {
-        starch_benchmark_one_upsample12( _entry, arg0, arg1, arg2, arg3 );
+        starch_benchmark_one_upsample12( _entry, arg0, arg1, arg2 );
     }
 }
 

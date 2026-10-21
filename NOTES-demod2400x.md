@@ -31,13 +31,16 @@ RTL-SDR capture decoded on a Raspberry Pi 5 unless stated otherwise.
    holds I/Q (`magbuf_sample()`), so later stages, such as a coherent
    demodulator, can reuse it.
 2. **Upsampling** (`upsample12`). A 5-phase, 8-tap polyphase FIR takes
-   2.4 MHz I/Q to 12 MHz, rounds by `UPSAMPLE_SHIFT` and takes the exact
-   integer magnitude, `floor(sqrt(I² + Q²))`. Output is stored as 6 rows, one
-   per 12 MHz tick within a 0.5 µs chip.
-3. **Preamble search** (`locate_preamble`). The metric
-   `256·minp / (minp + gap + 1)` at every 12 MHz position, from the
-   smallest of the 4 preamble pulses and the sum of the 12 gaps. Below
-   `PEAMBLE_THRES` (28) it is set to 0 without dividing, which skips most noise.
+   2.4 MHz I/Q to 12 MHz, rounds by `UPSAMPLE_SHIFT` and stores an 8-bit log
+   of the power, `L ≈ 8·log2(I² + Q² + 1)` (`demod_log8()`): the bits of the
+   float of P + 1, shifted right by 20, minus 127·8, i.e. 8 × the exponent plus
+   the top 3 mantissa bits. No square root, and one byte per sample. Output is
+   stored as 6 rows, one per 12 MHz tick within a 0.5 µs chip.
+3. **Preamble search** (`locate_preamble`). In logs the ratio becomes a
+   difference: `(12·L(minp) − ΣL(gaps)) / 2`, clamped to a byte, from the
+   smallest of the 4 preamble pulses and the 12 gaps, i.e. the smallest pulse
+   against the geometric mean of the gaps. No divide; below `PEAMBLE_THRES`
+   (86) it is set to 0.
 4. **Candidates** (`demod_2400x.c`). Peaks are scanned 8 metric bytes at a
    time (a SWAR test against the threshold). For each peak, the first 56 bits
    are decoded at the peak and its two neighbours, and the best quality wins
@@ -46,10 +49,14 @@ RTL-SDR capture decoded on a Raspberry Pi 5 unless stated otherwise.
    56- or 112-bit frame. A long frame other than DF17/18 is rejected if its
    second half quality is low.
 5. **Bit decoding** (`decode_bits`). Bit = 1 if the first chip of the pair is
-   larger. Quality = 256·Σ|a−b| / Σ(a+b).
+   larger. Quality = the mean of min(|La − Lb|, 32) over the bits, scaled
+   (×11/16) to roughly the old 256·Σ|a−b| / Σ(a+b) so the gates keep their
+   meaning.
 6. **Output** (`emitFrame`). Scored and decoded by the stock code. Then:
    * Fine arrival time: the decoded chips are correlated with the signal at
-     `pos−2 … pos+2` and the best offset is used for the MLAT timestamp.
+     `pos−2 … pos+2` and the best offset is used for the MLAT timestamp. The
+     correlation turns the log bytes back into magnitudes (a 256-entry table),
+     so weak noisy chips don't count as much as strong ones.
    * Signal level from the I/Q, with each sample's power capped at full
      scale as the stock magnitude kernels do.
    * Adaptive gain gets 2.4 MHz magnitudes and each decoded message, fed the
@@ -77,12 +84,14 @@ RTL-SDR capture decoded on a Raspberry Pi 5 unless stated otherwise.
 | Preamble metric without the factor 2 on `minp` (`PREAMBLE_KK`), `PEAMBLE_THRES` 50 → 28 | Both test the same ratio `minp / (gap + 1)`, so only the threshold changes (50 ≙ 27.7); one multiply less | Candidates −7% (RTL-SDR), −9% (SDRplay); messages −0.1%, +0.07%, same aircraft; CPU −2.9%, −3.1% on the Pi 5. Threshold 24 gave the SDRplay a 26th aircraft |
 | Upsampler square root within ±1 (no exact fix-ups) | Only the benchmark needed exact magnitudes | `upsample12` −10.7% on the Pi 3B (ARMv7), −6% on the Pi 5; CPU −2.8% (RTL-SDR), −3.0% (SDRplay) on the Pi 5; same aircraft and positions, messages ±1 |
 | Demodulate in 32768-sample pieces (`DEMOD_BLOCK`) | The 12 MHz data for a whole FIFO buffer is 1.3 MB; a piece's fits in L2 between upsample, preamble search and decodes. Done inside `demodulate2400x()`, as the drivers need the FIFO buffers to stay the size of their transfers | Output byte-identical; CPU −4.4% (RTL-SDR), −8.4% (SDRplay) on the Pi 5 |
+| 8-bit log power instead of the magnitude (`upsample12`, `locate_preamble`, `decode_bits`) | The square root (ARMv7 has no vector one) and the metric divide were the costliest steps; in logs the metric ratio is a difference. The float of P + 1 gives the log in 4 instructions; bytes halve the 12 MHz data and put 16 candidates in a NEON register. The pre-check and exact metric path go: every position gets the whole metric. Quality is capped at 32 steps per bit, or noise chips (the log of noise has a long tail) inflate weak frames' quality: twice the coherent attempts on the RTL-SDR, 8× on the SDRplay, and 3% fewer weak synthetic frames. `fineTiming` correlates magnitudes from a table, or weak frames' timestamps were ±1 tick in 4% of cases | Pi 5 demodulation −22% / −20% / −29% (RTL-SDR a / b / SDRplay 5 MHz), messages +0.6% / +0.7% / +0.1%, aircraft with 3+ messages 140 / 141 / 19 (dev 141 / 141 / 19); Pi 3B 20 s decode 11.75 → 8.96 s (−24%), messages +0.7%, aircraft 130 = 130; MLAT timestamps on synthetic frames identical to dev. Pi 3B kernels: `upsample12` 10.29 → 8.43 ms, `locate_preamble` 10.14 → 5.21 ms (any threshold), `decode_bits` 302 → 245 ns |
 
 ### Overflow bound
 
 Input is 12-bit (|x| ≤ 2048). Each filter output is at most
 `2048·UPSAMPLE_ABS_SUM >> UPSAMPLE_SHIFT`, and the power I² + Q² must stay
-below 2³¹ for signed 32-bit arithmetic and the exact square root. With
+below 2³¹ for signed 32-bit arithmetic, and P + 1 must stay a positive int32 for
+AVX2's signed float conversion. With
 `UPSAMPLE_ABS_SUM` 244 (the largest Σ|tap|, printed by `sim/ls_coeffs.py`) and
 shift 4, the worst case is 1.95·10⁹. A `_Static_assert` in
 `demod2400x_coeffs.h` enforces it, and the benchmark runs worst-case input.
@@ -90,27 +99,33 @@ shift 4, the worst case is 1.95·10⁹. A `_Static_assert` in
 ### Bit-exactness
 
 Generic is the reference; NEON and AVX2 must match it exactly, which
-`starch-benchmark -V` checks. That means exact methods only, with one
-exception:
+`starch-benchmark -V` checks. That means exact methods only:
 
-* Square root in the upsampler (`sqrt1_u32x4_neon`, `sqrt1_u32x8_avx2`):
-  within ±1 of generic's exact `floor(sqrt(I² + Q²))`, and `-V` accepts ±1
-  for `upsample12` only. The exact integer fix-ups made no difference to
-  the decoding. AArch64 and AVX2 truncate `sqrt + 1/64`, which gives exact
-  or one too large; under `-ffast-math` GCC may turn the AVX2 sqrt into
-  `vrsqrtps` plus a Newton step, about 2⁻²² relative error. ARMv7 NEON has
-  no vector sqrt, so it uses the `vrsqrte` estimate (8-bit table, relative
-  error 2⁻⁸·²⁵ measured over every float in [1, 4), where the pattern
-  repeats for each factor of 4) and one `vrsqrts` Newton step (2⁻¹⁵·⁹, so
-  0.72 at the largest power). It takes √(x + 1), which keeps the estimate
-  finite at 0.
+* Log power in the upsampler: the integer to float conversion rounds to
+  nearest in C, NEON (`vcvtq_f32_u32`) and AVX2 (`_mm256_cvtepi32_ps`) alike,
+  so all versions give the same bytes. The linear mantissa is at most 0.69 of
+  a step below `8·log2`; exact floor-log tables decoded no better and cost
+  more than the square root they replaced (see "Tried and dropped").
+* The preamble metric and the quality are integer sums, differences and
+  saturations: no divide.
 * Square root elsewhere (the converter's mean level): float sqrt, then
   integer checks in both directions.
-* Metric divide: float divide, then integer checks in both directions.
 * The mirror trick is exact integer arithmetic. Generic keeps the direct form.
 
 ## Tried and dropped
 
+* **Exact floor-log mantissa** for the 8-bit log (`floor(8·log2(1 + m/32))`):
+  as a `vtbl` on 5 or 4 mantissa bits, an exact quadratic
+  (`(4m + ((m·(16 − m)) >> 4) + 1) >> 3`) or a 32-bit mask of 0/1
+  corrections (`0x08CCCC88`, `o = (m + 2c) >> 2`); each cost about what
+  dropping the square root saved (`upsample12` 1.50–1.56 ms against 1.53 ms
+  with the square root, Pi 5), and decoding was the same as with the linear
+  mantissa (within 45 messages a minute).
+* **16-bit power for the log** (`P = SAT65535(I² + Q²) + 1`, 4-bit exponent):
+  48 dB is too narrow for one fixed shift. The RTL-SDR needed it high
+  (strong frames saturate), the SDRplay, 28 dB quieter, low (weak frames
+  lose their resolution). The 32-bit power with a 5-bit exponent covers both.
+* **Log quality without a cap**: see the 8-bit log row in "Decisions and why".
 * **2.4 MHz pre-detector gate** (skip upsampling where nothing is
   happening): real frames occur at 0.75–1.25 times the mean magnitude, so a
   gate cheap enough to help misses frames.
@@ -261,6 +276,11 @@ the rest are added (on the Pi 4 they add about 4 points). The upsampler and
 preamble search, about 80% of it, cost the same whatever the traffic. The
 risk is thermal throttling: at 600 MHz it could not keep up, so a heatsink
 is advisable. With `--no-coherent` it is about 55%.
+
+With the 8-bit log power (first 20 s of the second Pi 4 capture, against dev
+on the same file): 11.75 → 8.96 s of CPU (−24%), 34,826 → 35,064 messages,
+130 aircraft both; `upsample12` 8.43 ms, `locate_preamble` 5.21 ms at any
+threshold, `decode_bits` 245 ns.
 
 The static `dump1090` for ARMv7 needs `-lncurses`, which the cross-compiler
 doesn't have; ncurses is only used by interactive mode, so the test build

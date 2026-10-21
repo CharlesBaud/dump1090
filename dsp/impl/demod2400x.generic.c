@@ -13,12 +13,11 @@
 #include "dsp/helpers/demod2400x_iqconv.h"
 #include "dsp/helpers/demod2400x_coherent.h"
 
-// Get power
-static inline unsigned getpow_generic(
+// 8-bit log power of one filter output (demod_log8)
+static inline uint8_t getlog_generic(
     const int8_t *cv,
     const int16_t *ii,
-    const int16_t *qq,
-    int shift)
+    const int16_t *qq)
 {
     int32_t si =
           cv[0] * ii[0]
@@ -42,22 +41,12 @@ static inline unsigned getpow_generic(
 
     si = (si + UPSAMPLE_ROUND) >> UPSAMPLE_SHIFT;
     sq = (sq + UPSAMPLE_ROUND) >> UPSAMPLE_SHIFT;
-    uint32_t pwr = (uint32_t)(si*si) + (uint32_t)(sq*sq);
-
-#ifdef USE_MAGNITUDE
-    (void)shift;
-    pwr = demod_isqrt(pwr);
-#else
-    pwr >>= shift; // Set gain
-    if (pwr > 65535) pwr = 65535;
-#endif
-
-    return pwr;
+    return demod_log8((uint32_t)(si*si) + (uint32_t)(sq*sq));
 }
 
 
 // Upsample
-int STARCH_IMPL(upsample12, generic) (const int16_t * restrict in, int len, int shift, uint16_t * restrict oo)
+int STARCH_IMPL(upsample12, generic) (const int16_t * restrict in, int len, uint8_t * restrict oo)
 {
     if (len < 8)
         return 0;
@@ -81,19 +70,19 @@ int STARCH_IMPL(upsample12, generic) (const int16_t * restrict in, int len, int 
 
     while (1) {
 
-        oo[bpos] = getpow_generic(upsample_coeffs[0], ii, qq, shift);
+        oo[bpos] = getlog_generic(upsample_coeffs[0], ii, qq);
         if ((bpos += stride) >= stride6) bpos -= stride6 - 1;
 
-        oo[bpos] = getpow_generic(upsample_coeffs[1], ii, qq, shift);
+        oo[bpos] = getlog_generic(upsample_coeffs[1], ii, qq);
         if ((bpos += stride) >= stride6) bpos -= stride6 - 1;
 
-        oo[bpos] = getpow_generic(upsample_coeffs[2], ii, qq, shift);
+        oo[bpos] = getlog_generic(upsample_coeffs[2], ii, qq);
         if ((bpos += stride) >= stride6) bpos -= stride6 - 1;
 
-        oo[bpos] = getpow_generic(upsample_coeffs[3], ii, qq, shift);
+        oo[bpos] = getlog_generic(upsample_coeffs[3], ii, qq);
         if ((bpos += stride) >= stride6) bpos -= stride6 - 1;
 
-        oo[bpos] = getpow_generic(upsample_coeffs[4], ii, qq, shift);
+        oo[bpos] = getlog_generic(upsample_coeffs[4], ii, qq);
         if ((bpos += stride) >= stride6) bpos -= stride6 - 1;
 
         if (len == 0)
@@ -117,13 +106,13 @@ int STARCH_IMPL(upsample12, generic) (const int16_t * restrict in, int len, int 
 
 
 // Locate preamble
-int STARCH_IMPL(locate_preamble, generic) (const uint16_t * restrict pp, int nt, unsigned thres, uint8_t * restrict mm)
+int STARCH_IMPL(locate_preamble, generic) (const uint8_t * restrict pp, int nt, unsigned thres, uint8_t * restrict mm)
 {
     int stride = NU_STRIDE(nt);
 
     for (int j = 0; j < 6; j++) {
 
-        const uint16_t *restrict p = pp + j * stride;
+        const uint8_t *restrict p = pp + j * stride;
         uint8_t *restrict mp = mm + j;
 
         int plen = (nt + 5 - j) / 6;
@@ -132,12 +121,12 @@ int STARCH_IMPL(locate_preamble, generic) (const uint16_t * restrict pp, int nt,
 
         for (int i = 0; i < plen - 15; i++) {
 
-            uint32_t minp =
+            unsigned minp =
                 MIN(
                     MIN(p[0], p[2]),
                     MIN(p[7], p[9])
                 );
-            uint32_t gap =
+            unsigned gap =
                 p[ 1] +
                 p[ 3] +
                 p[ 4] +
@@ -151,9 +140,8 @@ int STARCH_IMPL(locate_preamble, generic) (const uint16_t * restrict pp, int nt,
                 p[14] +
                 p[15];
 
-            uint32_t n = 256 * minp;
-            uint32_t d = minp + gap + 1;
-            *mp = n < thres * d ? 0 : n / d;           // below threshold: 0, no divide
+            unsigned v = 12 * minp > gap ? MIN((12 * minp - gap) >> 1, 255u) : 0;   // negative: 0
+            *mp = v < thres ? 0 : (uint8_t) v;
 
             p++;
             mp += 6;
@@ -227,28 +215,24 @@ void STARCH_IMPL(iqdata_conv_sc16q11, generic) (const sc16_t * restrict in, uint
 
 // Decode bits from chip pairs (see demod2400x_dsp.h). Branch-free: on noise the bit
 // values are random, and a branch on them mispredicts half the time.
-void STARCH_IMPL(decode_bits, generic) (const uint16_t * restrict p, unsigned nbytes, uint8_t * restrict msg,
+void STARCH_IMPL(decode_bits, generic) (const uint8_t * restrict p, unsigned nbytes, uint8_t * restrict msg,
                                      unsigned * restrict quality)
 {
     uint32_t qual = 0;
-    uint32_t pow = 0;
 
     for (unsigned i = 0; i < nbytes; i++) {           // 16 chips per byte
 
         unsigned bits = 0;
         for (int k = 0; k < 8; k++) {
-            int a = p[2 * k];
-            int b = p[2 * k + 1];
-            int d = b - a;
-            bits = (bits << 1) | ((unsigned) d >> 31);   // 1 if a > b
-            qual += (uint32_t) (d < 0 ? -d : d);
-            pow += (uint32_t) (a + b);
+            int d = p[2 * k + 1] - p[2 * k];
+            bits = (bits << 1) | ((unsigned) d >> 31);   // 1 if the first is larger
+            qual += (uint32_t) MIN(d < 0 ? -d : d, DECODE_BITS_CAP);
         }
 
         msg[i] = (uint8_t) bits;
         p += 16;
     }
-    *quality = (unsigned) ((256 * (uint64_t) qual) / (pow + 1));
+    *quality = DECODE_BITS_QUALITY(qual, nbytes);
 }
 
 

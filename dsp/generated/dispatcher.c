@@ -188,7 +188,7 @@ starch_decode_bits_regentry * starch_decode_bits_select() {
     return NULL;
 }
 
-static void starch_decode_bits_dispatch ( const uint16_t * arg0, unsigned arg1, uint8_t * arg2, unsigned * arg3 ) {
+static void starch_decode_bits_dispatch ( const uint8_t * arg0, unsigned arg1, uint8_t * arg2, unsigned * arg3 ) {
     starch_decode_bits_regentry *entry = starch_decode_bits_select();
     if (!entry)
         abort();
@@ -500,7 +500,7 @@ starch_locate_preamble_regentry * starch_locate_preamble_select() {
     return NULL;
 }
 
-static int starch_locate_preamble_dispatch ( const uint16_t * arg0, int arg1, unsigned arg2, uint8_t * arg3 ) {
+static int starch_locate_preamble_dispatch ( const uint8_t * arg0, int arg1, unsigned arg2, uint8_t * arg3 ) {
     starch_locate_preamble_regentry *entry = starch_locate_preamble_select();
     if (!entry)
         abort();
@@ -1033,13 +1033,13 @@ starch_upsample12_regentry * starch_upsample12_select() {
     return NULL;
 }
 
-static int starch_upsample12_dispatch ( const int16_t * arg0, int arg1, int arg2, uint16_t * arg3 ) {
+static int starch_upsample12_dispatch ( const int16_t * arg0, int arg1, uint8_t * arg2 ) {
     starch_upsample12_regentry *entry = starch_upsample12_select();
     if (!entry)
         abort();
 
     starch_upsample12 = entry->callable;
-    return starch_upsample12 ( arg0, arg1, arg2, arg3 );
+    return starch_upsample12 ( arg0, arg1, arg2 );
 }
 
 starch_upsample12_ptr starch_upsample12 = starch_upsample12_dispatch;

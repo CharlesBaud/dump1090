@@ -27,15 +27,23 @@
 #define NU_STRIDE(t) ((((t)+5)/6+7)&~7)
 #define METRIC_SIZE(t) ((t)-6*15-12*LONG_FRAME)
 
-// decode_bits(p, nbytes, msg, quality): bits from chip pairs p[2k], p[2k+1] (bit = 1 if the
-// first is larger), 8 bits per byte, most significant first; *quality gets
-// 256 * sum |p[2k] - p[2k+1]| / (sum (p[2k] + p[2k+1]) + 1). nbytes <= 2048.
-#define DECODE_BITS_MAX_BYTES 2048
+// The 12 MHz samples are 8-bit log powers, L ~ 8 log2(P + 1) (demod_log8()).
 
-// Preamble metric: 256 * minp / (minp + gap + 1), minp the smallest of the 4 pulses
-// and gap the sum of the 12 gaps (< 256, so it fits a byte).
-// locate_preamble() sets metrics below its 'thres' argument to 0. That is exact
-// without dividing (floor(n / d) >= t <=> n >= t * d), and the peak search can't
-// tell the difference as long as thres <= its own threshold.
+// decode_bits(p, nbytes, msg, quality): bits from chip pairs p[2k], p[2k+1] (bit = 1 if the
+// first is larger), 8 bits per byte, most significant first. *quality gets the mean of
+// min(|p[2k] - p[2k+1]|, DECODE_BITS_CAP) (log power ratio of the two chips), scaled to
+// roughly the old magnitude contrast, 256 * |a - b| / (a + b), for contrasts up to about
+// 0.4, capped at 256. The cap (4 octaves of power) keeps noise chips, whose log has a long
+// tail, from inflating the quality of weak frames. nbytes <= 2048.
+#define DECODE_BITS_MAX_BYTES 2048
+#define DECODE_BITS_CAP 32
+#define DECODE_BITS_QUALITY(sum, nbytes) \
+    ((nbytes) ? MIN(256u, (unsigned) ((11 * (uint64_t) (sum)) / (16 * (uint64_t) (nbytes)))) : 0u)
+
+// Preamble metric: (12 L(minp) - sum of L over the 12 gaps) / 2, clamped to 0..255, minp
+// the smallest of the 4 pulses: 6 (L(minp) - mean L(gap)), the smallest pulse against the
+// geometric mean of the gaps, 6 units per step of L. locate_preamble() sets metrics below its
+// 'thres' argument to 0; the peak search can't tell the difference as long as thres <= its
+// own threshold.
 
 #endif

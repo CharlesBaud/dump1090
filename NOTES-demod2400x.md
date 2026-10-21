@@ -245,8 +245,14 @@ doesn't have the two options.
 
 ### Open points
 
-* DEMOD_2400X and the coherent pass are on by default (`--no-demod2400x`,
-  `--no-coherent` to switch off). Upstream may prefer stock as the default.
+* DEMOD_2400X and the coherent pass are on by default, so that standard
+  installations get the benefit without changing their configuration;
+  `--no-demod2400x` gives byte-identical stock output for anyone who needs it,
+  and `--no-coherent` drops the second pass. The cost is CPU: on a Pi 3B the
+  default uses about 39% of one core for demodulation against 14% for stock
+  (see [Raspberry Pi 3B](#raspberry-pi-3b)). A Pi 3B running it needs a
+  heatsink: if it throttles to 600 MHz it can't keep up and drops samples.
+  `vcgencmd get_throttled` shows whether it has throttled (0x0 if never).
 * The default version string is `11.2x`; upstream's is `unknown` (packages
   set it).
 * `--dcfilter` is still not supported (as upstream), although the converters

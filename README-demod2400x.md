@@ -124,7 +124,10 @@ runs were on three cores while the live receiver was also running on the same
 Pi, so they may be slightly high. The Pi 3B times are for the first 20 s of
 the capture, times 3; on a Pi 3B the default uses about 39% of one core for
 demodulation (see
-[NOTES-demod2400x.md](NOTES-demod2400x.md#raspberry-pi-3b)). Live on the Pi 4,
+[NOTES-demod2400x.md](NOTES-demod2400x.md#raspberry-pi-3b)). A Pi 3B needs a
+heatsink: if it overheats and throttles to 600 MHz it can't keep up and drops
+samples (`vcgencmd get_throttled` shows 0x0 if it has never throttled), and
+`--no-coherent` or `--no-demod2400x` reduce the load. Live on the Pi 4,
 with about 105,000 messages a minute, demodulation takes about 25% of one
 core. These results come from one receiver and a one-minute capture; longer
 side-by-side runs are in progress.

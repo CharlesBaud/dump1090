@@ -153,4 +153,6 @@ kernels correct the estimate in both directions to stay exact. QEMU computes
 these estimates exactly, so x86 correctness also needs a run on real
 hardware. All the AVX2 kernels, including the mirrored upsampler,
 `decode_bits` and `coherent_decode`, pass `starch-benchmark -V` on real x86-64
-hardware.
+hardware, also after the change to 8-bit log power, which made the AVX2
+`upsample12` 39% faster (1.43 → 0.87 ms per call) and `locate_preamble` 47%
+faster (0.38 → 0.20 ms).

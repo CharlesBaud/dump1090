@@ -47,7 +47,7 @@ its bits for a candidate frame:
 
 * if the bits pass the CRC, nothing changes;
 * if they fail **and** the magnitude quality of the first 56 bits is at
-  least `COHERENT_GATE` (96 out of 256), the frame is decoded again
+  least `COHERENT_GATE` (96; at most 176), the frame is decoded again
   coherently by `coherentDecode()`;
 * if the coherent bits pass the CRC, they replace the magnitude bits and the
   frame continues through the normal path (timestamp, signal level, output).
@@ -271,7 +271,7 @@ not `CFLAGS`, which would replace `-O3`).
 
 | Define | Default | Meaning |
 |---|---|---|
-| `COHERENT_GATE` | 96 | Minimum magnitude quality (first 56 bits, out of 256) to try |
+| `COHERENT_GATE` | 96 | Minimum magnitude quality (first 56 bits, at most 176) to try |
 | `COHERENT_RHO2` | 614 | Minimum carrier coherence of the first half, in 1/1024 (0.6) |
 | `COHERENT_MIX` | 0 | 1: if the coherent frame fails, try it with each half from the magnitude bits |
 | `COHERENT_STATS` | 0 | 1: print the statistics above at exit |

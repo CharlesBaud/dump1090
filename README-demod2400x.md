@@ -148,11 +148,13 @@ then `make test`):
 | gcc (native) | x86-64 AVX2 | 0 | `starch-benchmark -V` passes on real hardware |
 
 The gcc and clang AArch64 builds give byte-identical decoder output,
-timestamps included. On x86, clang with `-ffast-math` compiles every AVX2
-divide and square root to a reciprocal estimate (`vrcpps`/`vrsqrtps`), so the
-kernels correct the estimate in both directions to stay exact. QEMU computes
-these estimates exactly, so x86 correctness also needs a run on real
-hardware. All the AVX2 kernels, including the mirrored upsampler,
+timestamps included. On x86, clang with `-ffast-math` compiles AVX2 square
+roots to a reciprocal-square-root estimate (`vrsqrtps`), so the one that
+remains, in the input converter's mean level, corrects the estimate in both
+directions to stay exact; the upsampler, preamble search and bit decoding have
+no floating-point square root or divide (the bit quality's one division is an
+exact integer one). QEMU computes these estimates exactly, so x86
+correctness also needs a run on real hardware. All the AVX2 kernels, including the mirrored upsampler,
 `decode_bits` and `coherent_decode`, pass `starch-benchmark -V` on real x86-64
 hardware, also after the change to 8-bit log power, which made the AVX2
 `upsample12` 39% faster (1.43 → 0.87 ms per call) and `locate_preamble` 47%

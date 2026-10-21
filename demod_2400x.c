@@ -136,8 +136,8 @@ struct staticdata_t {
 // One preamble candidate
 struct candidate {
     int pos;                            // metric index = 12 MHz sample index from mag->data[0]
-    unsigned quality;                   // data quality of the first 56 bits (0..256)
-    unsigned quality2;                  // data quality of the second 56 bits (0..256)
+    unsigned quality;                   // data quality of the first 56 bits (0..176, decode_bits())
+    unsigned quality2;                  // the same for the second 56 bits (0..256 if from the coherent pass)
     uint8_t msg[MODES_LONG_MSG_BYTES];  // demodulated frame
 };
 
@@ -291,7 +291,7 @@ static void checkMetric(const uint8_t *metric, int mlen) {
 #endif
 
 
-// Decode 56 bits starting at metric position 'pos'; returns a quality score (0..256)
+// Decode 56 bits starting at metric position 'pos'; returns a quality score (0..176)
 static inline __attribute__((always_inline))
 unsigned decodeShortAdbsData(int pos, const uint8_t * restrict udata, int nt, uint8_t * restrict msg)
 {

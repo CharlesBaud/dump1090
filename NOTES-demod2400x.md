@@ -6,9 +6,15 @@ RTL-SDR capture decoded on a Raspberry Pi 5 unless stated otherwise.
 
 ## Test data
 
-* **SDRplay RSP1B recording**: 2.4 MHz SC16 I/Q, 17.8 s of signal. Used for
-  the early development and speed work. The stock demodulator crashes on
-  RSP1B input; that is a separate issue, not fixed on this branch.
+* **SDRplay RSP1B recordings**: 2.4 MHz SC16 I/Q, IFGR 30, RFGR 0, made with
+  a SoapySDR Python script. The early ones (17.8 s, then 60 s), used for the
+  early development and speed work, didn't set the bandwidth, so the IF
+  filter was 1.536 MHz (what SoapySDRPlay picks for a 2.4 MHz sample rate),
+  which smears the pulses. The later 60 s one is at 5 MHz, dump1090's SDRplay
+  default; recorded a minute apart, 5 MHz decoded 2.8 times as many messages
+  as 1.536 MHz. The stock SoapySDR driver fails on the RSP1B (the stream doesn't
+  start, and the gain runs backwards); that is fixed separately, not on this
+  branch.
 * **RTL-SDR recording**: 60 s at 2.4 MHz, UC8, from the live receiver: a
   Raspberry Pi 4 with the FlightAware Pro Stick Plus (blue, internal LNA and
   SAW filter) at gain 49.6 dB, outdoor antenna on a 3 m pole, 12 m of
@@ -49,9 +55,9 @@ RTL-SDR capture decoded on a Raspberry Pi 5 unless stated otherwise.
    56- or 112-bit frame. A long frame other than DF17/18 is rejected if its
    second half quality is low.
 5. **Bit decoding** (`decode_bits`). Bit = 1 if the first chip of the pair is
-   larger. Quality = the mean of min(|La − Lb|, 32) over the bits, scaled
-   (×11/16) to roughly the old 256·Σ|a−b| / Σ(a+b) so the gates keep their
-   meaning.
+   larger. Quality = 5.5 × the mean of min(|La − Lb|, 32) over the bits (11/16
+   of the sum per byte), so at most 176: roughly the old 256·Σ|a−b| / Σ(a+b),
+   so the gates keep their meaning.
 6. **Output** (`emitFrame`). Scored and decoded by the stock code. Then:
    * Fine arrival time: the decoded chips are correlated with the signal at
      `pos−2 … pos+2` and the best offset is used for the MLAT timestamp. The
@@ -68,21 +74,21 @@ RTL-SDR capture decoded on a Raspberry Pi 5 unless stated otherwise.
 |---|---|---|
 | DC removal in the converter | One pass over the data; FIFO keeps clean I/Q for later use | Fixed an overlap write-offset bug on the way; 3325 → 3332 messages on the SDRplay recording |
 | Always decode 112 bits | CRC correction can fix the DF bits, so length is only known after scoring | No lost long frames |
-| Skip the metric divide below threshold | `floor(n/d) ≥ T ⇔ n ≥ T·d`; peaks below T are never used | ~1570 → ~1490 ms (SDRplay recording) |
-| AVX2 divide/sqrt corrected both ways | `-ffast-math` lets the compiler use reciprocal estimates; results were one too small on real Intel hardware | Validation passes on Intel |
+| Skip the metric divide below threshold (superseded: the 8-bit log metric has no divide) | `floor(n/d) ≥ T ⇔ n ≥ T·d`; peaks below T are never used | ~1570 → ~1490 ms (SDRplay recording) |
+| AVX2 divide/sqrt corrected both ways (now only the converter's mean-level square root is left; the 8-bit log removed the others) | `-ffast-math` lets the compiler use reciprocal estimates; results were one too small on real Intel hardware | Validation passes on Intel |
 | Fine arrival time | Bit quality is flat over ~3 ticks on a clean pulse, so `pos` was biased (0 to +2 ticks by phase) and jittery (σ 0.88) | Exact on synthetic frames; MLAT synced with ~260 receivers live |
 | Least-squares coefficients | The windowed sinc had uneven delay and gain across phases | Weak synthetic frames 1205 → 1405 |
 | All phases sum to 128 | Less rounding error; still fits the overflow bound | Delay error 0.046 → 0.028 samples |
-| `DATA_THRES` 80 → 65 | More messages, no extra CPU or junk tracks | +0.2% messages |
+| `DATA_THRES` 80 → 65 | More messages, no extra CPU or junk tracks | +0.2% messages. Still 65 with the capped log quality, which is scaled to the old contrast; there 50, 65 and 80 give 104,924, 104,915 and 104,779 messages (RTL-SDR, 60 s) and the same 11,920 (SDRplay) |
 | `UPSAMPLE_SHIFT` 5 → 4 | One more bit for weak signals; power still < 2³¹ | Results unchanged within noise |
 | Mirror-symmetric upsampler (NEON, AVX2) | Phase 4−c is phase c reversed, so pairs share sums `x[k] ± x[7−k]`: half the multiplies | `upsample12` 2.48 → 1.54 ms per call |
 | `decode_bits` starch kernel | Called 5 times per candidate, ~2M candidates a minute | 82 → 26 ns per call; demod 4.8 → 4.3 s |
 | Adaptive gain fed | It was not called at all by the new demodulator | Same gain decisions as stock |
 | Signal power capped at full scale | Clipped frames reported up to +1.1 dBFS | RSSI matches stock (mean +0.01 dB, σ 0.2 dB) |
 | ARMv7 NEON: no moves out of NEON registers in the hot paths | The in-order Cortex-A53 stalls on them. `upsample12` stored each output straight to its phase row (single-lane stores, row pointers stepping on; the pattern repeats every 24 windows) instead of a scalar 5-way interleave through a buffer (since replaced by the partial transpose, below); `coherent_decode` uses the AArch64 chip method (I/Q interleaved, chip pairs folded) instead of two horizontal sums per chip | Pi 3B: `upsample12` 11.42 → 10.27 ms, `coherent_decode` 11.8 → 10.1 µs (5.5 → 4.7 at the gate); with the next row, a 20 s decode 11.95 → 11.41 s (−4.5%), same messages and aircraft. AArch64 unchanged |
-| `locate_preamble` NEON: threshold test in 16-bit lanes | minp·(256 − T) ≥ T·(gap + 1) with the gap summed in saturating 16-bit adds can only pass wrongly, never reject wrongly; the few blocks that pass get the exact 32-bit metric, so the output is still bit-exact | At threshold 50: Pi 5 1.14 → 1.03 ms, Pi 3B 10.69 → 10.13 ms; threshold 0 (everything passes) is slower, 1.58 → 2.37 ms |
-| Preamble metric without the factor 2 on `minp` (`PREAMBLE_KK`), `PEAMBLE_THRES` 50 → 28 | Both test the same ratio `minp / (gap + 1)`, so only the threshold changes (50 ≙ 27.7); one multiply less | Candidates −7% (RTL-SDR), −9% (SDRplay); messages −0.1%, +0.07%, same aircraft; CPU −2.9%, −3.1% on the Pi 5. Threshold 24 gave the SDRplay a 26th aircraft |
-| Upsampler square root within ±1 (no exact fix-ups) | Only the benchmark needed exact magnitudes | `upsample12` −10.7% on the Pi 3B (ARMv7), −6% on the Pi 5; CPU −2.8% (RTL-SDR), −3.0% (SDRplay) on the Pi 5; same aircraft and positions, messages ±1 |
+| `locate_preamble` NEON: threshold test in 16-bit lanes (superseded: the 8-bit log metric has no divide, so no pre-check) | minp·(256 − T) ≥ T·(gap + 1) with the gap summed in saturating 16-bit adds can only pass wrongly, never reject wrongly; the few blocks that pass get the exact 32-bit metric, so the output is still bit-exact | At threshold 50: Pi 5 1.14 → 1.03 ms, Pi 3B 10.69 → 10.13 ms; threshold 0 (everything passes) is slower, 1.58 → 2.37 ms |
+| Preamble metric without the factor 2 on `minp` (`PREAMBLE_KK`), `PEAMBLE_THRES` 50 → 28 (superseded by the 8-bit log metric, threshold 86) | Both test the same ratio `minp / (gap + 1)`, so only the threshold changes (50 ≙ 27.7); one multiply less | Candidates −7% (RTL-SDR), −9% (SDRplay); messages −0.1%, +0.07%, same aircraft; CPU −2.9%, −3.1% on the Pi 5. Threshold 24 gave the SDRplay a 26th aircraft |
+| Upsampler square root within ±1 (no exact fix-ups; superseded: the 8-bit log has no square root and is exact) | Only the benchmark needed exact magnitudes | `upsample12` −10.7% on the Pi 3B (ARMv7), −6% on the Pi 5; CPU −2.8% (RTL-SDR), −3.0% (SDRplay) on the Pi 5; same aircraft and positions, messages ±1 |
 | Demodulate in 32768-sample pieces (`DEMOD_BLOCK`) | The 12 MHz data for a whole FIFO buffer is 1.3 MB; a piece's fits in L2 between upsample, preamble search and decodes. Done inside `demodulate2400x()`, as the drivers need the FIFO buffers to stay the size of their transfers | Output byte-identical; CPU −4.4% (RTL-SDR), −8.4% (SDRplay) on the Pi 5 |
 | 8-bit log power instead of the magnitude (`upsample12`, `locate_preamble`, `decode_bits`) | The square root (ARMv7 has no vector one) and the metric divide were the costliest steps; in logs the metric ratio is a difference. The float of P + 1 gives the log in 4 instructions; bytes halve the 12 MHz data and put 16 candidates in a NEON register. The pre-check and exact metric path go: every position gets the whole metric. Quality is capped at 32 steps per bit, or noise chips (the log of noise has a long tail) inflate weak frames' quality: twice the coherent attempts on the RTL-SDR, 8× on the SDRplay, and 3% fewer weak synthetic frames. `fineTiming` correlates magnitudes from a table, or weak frames' timestamps were ±1 tick in 4% of cases | Pi 5 demodulation −22% / −20% / −29% (RTL-SDR a / b / SDRplay 5 MHz), messages +0.6% / +0.7% / +0.1%, aircraft with 3+ messages 140 / 141 / 19 (dev 141 / 141 / 19); Pi 3B 20 s decode 11.75 → 8.96 s (−24%), messages +0.7%, aircraft 130 = 130; MLAT timestamps on synthetic frames identical to dev. Pi 3B kernels: `upsample12` 10.29 → 8.43 ms, `locate_preamble` 10.14 → 5.21 ms (any threshold), `decode_bits` 302 → 245 ns |
 | ARMv7 `upsample12`: partial transpose instead of single-byte stores | With byte outputs, `vtrn.8` and `vtrn.16` on the phase registers give `[c0 c1 c2 c3]` of windows k and k + 4; `ph[4]` shifted by 8k (as 32-bit lanes) and `vtrn.32` add c4, giving each window's 5 outputs in one register (11 shuffles per 8 windows). Stored 8 bytes at a time at `5w`, overlapping, they are in tick order, and the AArch64 `vld3q_u16` split into the 6 rows is shared, replacing 40 lane stores per 8 windows. A 3-way split between registers doesn't exist (`vuzp` is 2-way), so the 248-byte stack buffer stays; it lives in L1 | Pi 3B `upsample12` 8.46 → 7.18 ms (−15%), 20 s decode 8.97 → 8.47 s (−5.6%), identical output; AArch64 unchanged |
@@ -105,12 +111,15 @@ Generic is the reference; NEON and AVX2 must match it exactly, which
 * Log power in the upsampler: the integer to float conversion rounds to
   nearest in C, NEON (`vcvtq_f32_u32`) and AVX2 (`_mm256_cvtepi32_ps`) alike,
   so all versions give the same bytes. The linear mantissa is at most 0.69 of
-  a step below `8·log2`; exact floor-log tables decoded no better and cost
-  more than the square root they replaced (see "Tried and dropped").
-* The preamble metric and the quality are integer sums, differences and
-  saturations: no divide.
-* Square root elsewhere (the converter's mean level): float sqrt, then
-  integer checks in both directions.
+  a step below `8·log2`; exact floor-log versions decoded no better and cost
+  about as much as the square root they replaced (see "Tried and dropped").
+* The preamble metric is integer sums, differences and saturations, with no
+  divide. The quality is an integer sum and one exact integer division per
+  call (by the number of bytes).
+* Square root, only in the input converter's mean level (`mean_level`, used
+  by the stock Mode A/C demodulator's noise estimate): a float square root
+  (on ARMv7 the `vrsqrte` estimate and one Newton step), then integer checks
+  in both directions.
 * The mirror trick is exact integer arithmetic. Generic keeps the direct form.
 
 ## Tried and dropped
@@ -138,12 +147,13 @@ Generic is the reference; NEON and AVX2 must match it exactly, which
   as `DEMOD_BLOCK` with `--ifile`, but the RTL-SDR, HackRF, LimeSDR and
   bladeRF drivers put each transfer (up to 131072 samples) into one buffer
   and drop what doesn't fit, and the stock demodulator would change too.
-* **Upsampling only around detected preambles**: the 6-phase metric needs
+* **Upsampling only around detected preambles** (with 16-bit magnitudes): the 6-phase metric needs
   the full 12 MHz data, and a 2.4 MHz four-pulse pre-test passes 42% of
   positions (95% of 64-sample blocks); upsampling on demand for the decodes
   alone is break-even.
 * **Other preamble metrics** (fewer candidates for the same messages, to
-  save CPU). Tested on a 60 s RTL-SDR and a 60 s SDRplay recording:
+  save CPU), tried on the earlier ratio metric, before the 8-bit log. Tested
+  on a 60 s RTL-SDR and a 60 s SDRplay recording:
   * Noise-floor bias in the denominator (25th percentile of the buffer):
     +0.4% messages at a third fewer candidates on both, but needs a floor
     estimate and tuning constants.
@@ -260,9 +270,10 @@ doesn't have the two options.
 * Mode A/C (`--modeac`) with DEMOD_2400X goes through `getMagnitude()`, which
   keeps a static buffer. With `--no-demod2400x` its output is identical to
   stock, and it runs clean under the sanitizers.
-* Statics: `getMagnitude()`'s buffer, the coherent statistics and sample-dump
-  state in `demod_2400x.c`, and two diagnostic globals in
-  `demod_2400x_coherent.c`. All are used from the demodulator thread only.
+* Statics: `getMagnitude()`'s buffer, the coherent statistics, sample-dump
+  state and `fineTiming()`'s magnitude table (filled on first use) in
+  `demod_2400x.c`, and two diagnostic globals in `demod_2400x_coherent.c`.
+  All are used from the demodulator thread only.
 * The stock SoapySDR driver fails on an SDRplay RSP1B (the stream doesn't
   start, and the gain runs backwards); fixed separately, on
   `sdrplay-gain-dev`, not here.

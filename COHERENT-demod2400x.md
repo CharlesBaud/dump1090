@@ -3,8 +3,8 @@
 An experimental second pass for frames that the normal DEMOD_2400X decoder
 finds but can't decode. It uses the phase of the signal, which the normal
 decoder throws away, to recover some of those frames. On the 60 s Pi 4
-RTL-SDR capture it adds about 11% more messages (84,389 → 93,398) for about
-20% more demodulation CPU.
+RTL-SDR capture it adds about 11% more messages (84,545 → 93,827) for about
+25% more demodulation CPU.
 
 Branch: `demod-2400x-dev` (developed on `demod-2400x-coherent`). Built in by
 `-DDEMOD_2400X_COHERENT` in the Makefile and on by default; `--no-coherent`
@@ -167,31 +167,32 @@ Raspberry Pi 5 (comparisons with stock dump1090 are in
 
 | | Without coherent | With coherent |
 |---|---|---|
-| Messages | 84,389 | 93,398 (+11%) |
-| DF17 (ADS-B) | 11,795 | 13,294 (+13%) |
-| Global CPR positions | 3,970 | 4,485 (+13%) |
-| Messages at −30 to −24 dBFS | 4,507 | 7,155 (+59%) |
-| Aircraft | 141 | 154 |
-| Demodulation CPU | 4.04 s | 4.88 s |
+| Messages | 84,545 | 93,827 (+11%) |
+| DF17 (ADS-B) | 11,830 | 13,365 (+13%) |
+| Global CPR positions | 3,977 | 4,538 (+14%) |
+| Messages below −24 dBFS | 5,028 | 7,784 (+55%) |
+| Aircraft | 139 | 150 |
+| Demodulation CPU | 3.0 s | 3.7 s |
 
-The coherent pass itself takes about 0.77 s for the 60 s of signal.
+The coherent pass itself takes about 0.69 s for the 60 s of signal.
 
 Coherent attempts by the magnitude quality of the failed frame:
 
 | Magnitude quality | Attempts | Coherent (rho2 ≥ 0.6) | Rescued |
 |---|---|---|---|
-| 96–111 | 255,254 | 30,500 | 1,873 |
-| 112–127 | 186,845 | 26,501 | 2,540 |
-| 128–143 | 116,697 | 19,434 | 1,971 |
-| 144–159 | 53,392 | 14,376 | 1,276 |
-| 160–175 | 24,187 | 10,668 | 794 |
-| 176–191 | 10,626 | 6,095 | 412 |
-| 192–207 | 2,778 | 2,005 | 109 |
-| 208+ | 180 | 147 | 8 |
-| **Total** | **649,959** | **109,726** | **8,983** |
+| 96–111 | 364,322 | 30,684 | 1,414 |
+| 112–127 | 124,962 | 35,049 | 2,575 |
+| 128–143 | 62,537 | 27,361 | 2,316 |
+| 144–159 | 35,622 | 20,965 | 1,811 |
+| 160–175 | 15,495 | 12,287 | 1,155 |
+| 176 (the largest) | 365 | 359 | 40 |
+| **Total** | **603,303** | **126,705** | **9,311** |
 
-Of the 8,983 rescued frames, 8,930 are from aircraft already known from
-other messages; 53 are from addresses not seen otherwise. As in the stock
+The quality is the mean log-power contrast of the bits, capped at 32 steps per
+bit and scaled to about the old 0–256 magnitude contrast, so it can't exceed 176.
+
+Of the 9,311 rescued frames, 9,263 are from aircraft already known from
+other messages; 48 are from addresses not seen otherwise. As in the stock
 decoder, a message from an unknown address needs confirmation before it
 creates an aircraft, so the risk of false aircraft is the same as before.
 
@@ -208,7 +209,7 @@ aircraft whose transmitters aren't phase-stable.
 `stats.json` (in the `--write-json` directory) has the coherent counts in
 each period's `local` section, and `--stats` prints them too:
 
-    "coherent":{"tried":649959,"coherent":109726,"rescued":8983}
+    "coherent":{"tried":603303,"coherent":126705,"rescued":9311}
 
 * `tried`: frames that failed the CRC and passed the quality gate;
 * `coherent`: of those, frames whose carrier passed the rho2 gate;
@@ -236,11 +237,11 @@ implementations that give bit-identical results:
 |---|---|---|
 | Generic C (Pi 5) | 4.2 µs | 1.6 µs |
 | NEON, aarch64 (Pi 5) | 1.80 µs | 0.81 µs |
-| NEON, ARMv7 (Pi 5, 32-bit) | 2.44 µs | 1.12 µs |
+| NEON, ARMv7 (Pi 5, 32-bit) | 2.15 µs | 0.97 µs |
 | NEON, aarch64 (Pi 4) | 3.40 µs | 1.53 µs |
-| NEON, ARMv7 (Pi 3B, 32-bit) | 11.8 µs | 5.5 µs |
-| Generic C (x86-64) | 3.7 µs | 1.5 µs |
-| AVX2 (x86-64) | 1.06 µs | 0.48 µs |
+| NEON, ARMv7 (Pi 3B, 32-bit) | 10.1 µs | 4.7 µs |
+| Generic C (x86-64) | 3.6 µs | 1.5 µs |
+| AVX2 (x86-64) | 1.04 µs | 0.48 µs |
 
 Most frames stop at the gate, so the cost is dominated by the first half:
 interpolating its 112 complex chips (about half the time), converting them to

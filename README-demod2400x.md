@@ -53,10 +53,10 @@ recording and synthetic frames; see
 
 | | Stock | DEMOD_2400X | Change | + coherent | Change |
 |---|---|---|---|---|---|
-| Usable messages | 73,146 | 84,389 | +15% | 93,398 | +28% |
-| DF17 (ADS-B) | 10,352 | 11,795 | +14% | 13,294 | +28% |
-| Global CPR positions | 3,510 | 3,970 | +13% | 4,485 | +28% |
-| Aircraft | 136 | 141 | +5 | 154 | +18 |
+| Usable messages | 73,146 | 84,545 | +16% | 93,827 | +28% |
+| DF17 (ADS-B) | 10,352 | 11,830 | +14% | 13,365 | +29% |
+| Global CPR positions | 3,510 | 3,977 | +13% | 4,538 | +29% |
+| Aircraft | 136 | 139 | +3 | 150 | +14 |
 
 Positions and tracks are timed by the wall clock, so files are decoded with
 `--throttle` (at the speed they were captured). Without it the minute is
@@ -64,32 +64,35 @@ decoded in a few seconds, aircraft appear to move many times faster, some
 positions fail the speed check, and the counts vary from run to run and
 with CPU speed. With `--throttle` every figure repeats exactly.
 
-The gain is concentrated in weak signals. Messages by signal strength:
+The gain is concentrated in weak signals. Messages by signal strength (from the
+signal byte of the Beast output; the first fraction of a second, before the
+connection, is missed by all three alike):
 
 | RSSI (dBFS) | Stock | DEMOD_2400X | Change | + coherent | Change |
 |---|---|---|---|---|---|
-| −30 to −27 | 131 | 302 | +131% | 990 | +656% |
-| −27 to −24 | 2,347 | 4,205 | +79% | 6,165 | +163% |
-| −24 to −21 | 7,111 | 9,407 | +32% | 10,851 | +53% |
-| −21 to −18 | 9,010 | 10,759 | +19% | 11,855 | +32% |
-| −18 to −15 | 12,213 | 13,703 | +12% | 14,855 | +22% |
-| −15 to −10 | 18,226 | 19,924 | +9% | 21,432 | +18% |
-| −10 to −5 | 9,952 | 10,710 | +8% | 11,378 | +14% |
-| above −5 | 14,151 | 15,375 | +9% | 15,866 | +12% |
+| below −27 | 144 | 304 | +111% | 1,035 | +619% |
+| −27 to −24 | 2,732 | 4,724 | +73% | 6,749 | +147% |
+| −24 to −21 | 6,454 | 8,588 | +33% | 9,927 | +54% |
+| −21 to −18 | 9,587 | 11,423 | +19% | 12,642 | +32% |
+| −18 to −15 | 12,013 | 13,558 | +13% | 14,731 | +23% |
+| −15 to −10 | 17,956 | 19,675 | +10% | 21,184 | +18% |
+| −10 to −5 | 9,902 | 10,639 | +7% | 11,337 | +14% |
+| above −5 | 14,018 | 15,272 | +9% | 15,802 | +13% |
 
 Position messages by distance from the receiver:
 
 | Distance | Stock | DEMOD_2400X | Change | + coherent | Change | Aircraft (stock / DEMOD_2400X / + coherent) |
 |---|---|---|---|---|---|---|
-| 0–50 km | 737 | 811 | +10% | 880 | +19% | 12 / 13 / 13 |
-| 50–100 km | 1,447 | 1,583 | +9% | 1,735 | +20% | 30 / 31 / 33 |
-| 100–150 km | 893 | 1,011 | +13% | 1,154 | +29% | 33 / 32 / 33 |
-| 150–200 km | 438 | 525 | +20% | 609 | +39% | 20 / 22 / 24 |
-| 200–250 km | 121 | 145 | +20% | 195 | +61% | 10 / 13 / 15 |
-| 250–300 km | 16 | 26 | +62% | 49 | +206% | 2 / 4 / 4 |
+| 0–50 km | 737 | 818 | +11% | 883 | +20% | 12 / 13 / 13 |
+| 50–100 km | 1,444 | 1,583 | +10% | 1,750 | +21% | 30 / 31 / 33 |
+| 100–150 km | 893 | 1,014 | +14% | 1,173 | +31% | 33 / 33 / 33 |
+| 150–200 km | 438 | 527 | +20% | 626 | +43% | 20 / 23 / 24 |
+| 200–250 km | 121 | 145 | +20% | 196 | +62% | 10 / 13 / 15 |
+| 250–300 km | 16 | 25 | +56% | 48 | +200% | 2 / 4 / 4 |
+| over 300 km | 37 | 49 | +32% | 62 | +68% | 5 / 5 / 5 |
 
 Weak synthetic frames (2,000 DF17 frames with a random ±100 kHz carrier
-offset, decoded out of 2,000): 689 (stock), 1,404 (DEMOD_2400X), 1,595
+offset, decoded out of 2,000): 689 (stock), 1,407 (DEMOD_2400X), 1,592
 (+ coherent).
 The generator and checker are in [sim/](sim/).
 
@@ -101,35 +104,30 @@ phases:
 | | Stock | DEMOD_2400X |
 |---|---|---|
 | Bias across phases (clean) | 0 to +2 ticks | none |
-| Jitter, noisy frames (σ) | 0.41–0.48 ticks | < 0.2 ticks |
+| Jitter, noisy frames (σ) | 0.48 ticks | 0 (every frame on the right tick) |
 
 One tick is 83.3 ns. Running live on the Pi 4, mlat-client stays synchronized
-with about 260 nearby receivers, as with stock.
+with about 260–270 nearby receivers, as with stock.
 
 ## CPU
 
-Demodulation time for the 60 s capture:
+Demodulation time for the 60 s capture (`--fix`):
 
 | | Stock | DEMOD_2400X | + coherent |
 |---|---|---|---|
-| Raspberry Pi 5 (Cortex-A76) | 2.0 s | 4.3 s (gcc 14), 4.1 s (clang 19) | about 0.8 s more |
-| Raspberry Pi 4 (Cortex-A72) | 3.8 s | 11.0 s | 12.4 s |
-| Raspberry Pi 3B (Cortex-A53, 32-bit) | 8.5 s | 32.9 s | 37.7 s |
+| Raspberry Pi 5 (Cortex-A76) | 2.1 s | 3.0 s (gcc 14), 2.8 s (clang 19) | 3.7 s (gcc), 3.6 s (clang) |
+| Raspberry Pi 4 (Cortex-A72) | 4.0 s | 5.8 s | 7.5 s |
+| Raspberry Pi 3B (Cortex-A53, 32-bit) | 8.6 s | 18.4 s | 23.5 s |
 
-The Pi 4 times were measured with `--no-demod2400x`, `--no-coherent` and the
-default, on two cores while the live receiver was also running on the same Pi,
-so they are probably slightly high. The Pi 3B times are for the first 20 s of
-the capture, times 3; on a Pi 3B the default uses about 63% of one core for
+Measured with `--no-demod2400x`, `--no-coherent` and the default. The Pi 4
+runs were on three cores while the live receiver was also running on the same
+Pi, so they may be slightly high. The Pi 3B times are for the first 20 s of
+the capture, times 3; on a Pi 3B the default uses about 39% of one core for
 demodulation (see
-[NOTES-demod2400x.md](NOTES-demod2400x.md#raspberry-pi-3b)). Live on the Pi 4 this is
-about 31% of one core. These results come from
-one receiver and a one-minute capture; longer side-by-side runs are in
-progress.
-
-With the 8-bit log power (the table above was measured before it), the Pi 5
-demodulates the 60 s captures in 20–29% less time, and a Pi 3B decodes the
-first 20 s of a capture in 24% less CPU (8.96 s against 11.75 s), with
-0.1–0.7% more messages and the same aircraft.
+[NOTES-demod2400x.md](NOTES-demod2400x.md#raspberry-pi-3b)). Live on the Pi 4,
+with about 105,000 messages a minute, demodulation takes about 25% of one
+core. These results come from one receiver and a one-minute capture; longer
+side-by-side runs are in progress.
 
 ## Compilers
 
@@ -139,11 +137,11 @@ then `make test`):
 
 | Compiler | Target | Warnings | `make test` |
 |---|---|---|---|
-| gcc 14.2 | AArch64 (Pi 5) | 0 | pass (65 validations) |
-| clang 19.1 | AArch64 (Pi 5) | 0 | pass (65 validations) |
-| gcc 14.2 (cross) | ARMv7 | 0 | `starch-benchmark -V` passes, run natively on AArch64 |
-| gcc 14.2 (cross) | x86-64 AVX2 | 0 | pass under qemu-x86_64 |
-| clang 19.1 (cross) | x86-64 AVX2 | 0 | pass under qemu-x86_64 (59 validations) |
+| gcc 14.2 | AArch64 (Pi 5) | 0 | pass (74 validations) |
+| clang 19.1 | AArch64 (Pi 5) | 0 | pass (74 validations) |
+| gcc 14.2 (cross) | ARMv7 | 0 | `starch-benchmark -V` passes (74), run natively on AArch64 |
+| gcc 14.2 (cross) | x86-64 AVX2 | 0 | pass under qemu-x86_64 (68 validations) |
+| clang 19.1 (cross) | x86-64 AVX2 | 0 | pass under qemu-x86_64 (68 validations) |
 | gcc (native) | x86-64 AVX2 | 0 | `starch-benchmark -V` passes on real hardware |
 
 The gcc and clang AArch64 builds give byte-identical decoder output,

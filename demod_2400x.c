@@ -152,7 +152,7 @@ struct candidate {
 //   uint8 mag_msg[14] (magnitude bits), uint8 good_msg[14] (corrected bits if accepted)
 //   int32 chips[240][2]: complex filter outputs (I, Q) at pos + 6k, before rounding;
 //   k = 0..15 preamble, 16 + 2i and 17 + 2i the two chips of bit i
-// Each chip is checked against the magnitude the decoder used (same rounding and sqrt).
+// Each chip is checked against the log power the decoder used (same rounding and log).
 static struct { FILE *f; unsigned gate; unsigned long written, accepted, rejected, checked, mismatches; } dump;
 
 static void dumpReport(void)

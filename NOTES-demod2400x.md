@@ -158,7 +158,8 @@ Generic is the reference; NEON and AVX2 must match it exactly, which
   but 303 → 320 ns for the 7 bytes actually decoded.
 * **ARMv7 `vtbl4` for the upsampler's 5-way interleave**: only 0.2 ms of
   the 1.37 ms the scalar interleave costs (a 4-register `vtbl` is about 8
-  cycles on the Cortex-A53); storing straight to the rows replaced it.
+  cycles on the Cortex-A53); storing straight to the rows replaced it, and
+  with byte outputs the partial transpose replaced that.
 * **Soft-decision bit flipping** (flip the weakest bits when the CRC fails):
   `--fix` already repairs any single bit, so this only helps 2-bit errors,
   at a false-decode risk. Not pursued.
@@ -175,6 +176,18 @@ Generic is the reference; NEON and AVX2 must match it exactly, which
   reproduce `-ffast-math` problems).
 * Real data: stock and DEMOD_2400X on the same capture, compared message by
   message (contents, RSSI, timestamps).
+* `--no-demod2400x` against upstream `dev`'s stock build: identical messages
+  and 12 MHz timestamps (`--raw --mlat`) and identical statistics apart from
+  the wall-clock CPR counts, for UC8, SC16 and SC16Q11 input and with
+  `--modeac`.
+* Sanitizers: a `-fsanitize=address,undefined` build decodes UC8, SC16 and
+  SC16Q11 input in every mode (default, `--no-coherent`, `--no-demod2400x`,
+  `--modeac`, adaptive gain) and runs `starch-benchmark -V` with no
+  AddressSanitizer reports. UBSan reports only upstream code: `1 << df` with
+  `df` 31 in `mode_s.c` and `demod_2400.c` (an `int` shift; harmless in
+  practice).
+* gcc and clang builds give byte-identical decoder output, timestamps
+  included.
 * Synthetic data: `sim/gen_timing.c`. Frames need a carrier offset: at
   exactly 0 Hz the DC filter removes part of the signal.
 * Adaptive gain with `--ifile` needs a gain table; for testing, a fake R820T
@@ -210,9 +223,10 @@ stated.
 | `wisdom.*` | Kernel order for the new functions | starch picks the fastest version |
 | `README.md` | A short section pointing at these documents | |
 
-`--no-demod2400x` gives byte-identical output to upstream `dev`'s stock build on
-the 60 s capture (checked with `--raw`), and so does a build without the defines,
-which then doesn't have the two options.
+`--no-demod2400x` gives byte-identical output to upstream `dev`'s stock build
+(messages and timestamps with `--raw --mlat`, for UC8, SC16 and SC16Q11 input
+and with `--modeac`), and so does a build without the defines, which then
+doesn't have the two options.
 
 ### Generated and derived files
 
@@ -238,11 +252,16 @@ which then doesn't have the two options.
 * `--dcfilter` is still not supported (as upstream), although the converters
   now remove DC anyway.
 * Mode A/C (`--modeac`) with DEMOD_2400X goes through `getMagnitude()`, which
-  keeps a static buffer; it has had little testing.
+  keeps a static buffer. With `--no-demod2400x` its output is identical to
+  stock, and it runs clean under the sanitizers.
 * Statics: `getMagnitude()`'s buffer, the coherent statistics and sample-dump
   state in `demod_2400x.c`, and two diagnostic globals in
   `demod_2400x_coherent.c`. All are used from the demodulator thread only.
-* The stock demodulator crashes on SDRplay RSP1B input; not addressed here.
+* The stock SoapySDR driver fails on an SDRplay RSP1B (the stream doesn't
+  start, and the gain runs backwards); fixed separately, on
+  `sdrplay-gain-dev`, not here.
+* Upstream code shifts `1 << df` with `df` up to 31 in `mode_s.c` and
+  `demod_2400.c` (undefined for an `int`, found by UBSan); left as upstream.
 
 ## Raspberry Pi 3B
 
@@ -253,35 +272,25 @@ the Pi 5's.
 
 | Run | Messages | Demodulation per 20 s | One core |
 |---|---|---|---|
-| `--no-demod2400x` (stock) | 24,345 | 2.8 s | 14% |
-| `--no-coherent` | 28,051 | 11.0 s | 55% |
-| default (DEMOD_2400X + coherent) | 30,971 | 12.6 s | 63% |
+| `--no-demod2400x` (stock) | 24,345 | 2.9 s | 14% |
+| `--no-coherent` | 28,126 | 6.1 s | 31% |
+| default (DEMOD_2400X + coherent) | 31,152 | 7.8 s | 39% |
 
-Kernel times on the Pi 3B (NEON) against the Pi 5 (aarch64 NEON):
+Kernel times on the Pi 3B (ARMv7 NEON) against the Pi 5 (AArch64 NEON):
 
 | Kernel | Pi 3B | Pi 5 |
 |---|---|---|
-| `upsample12` | 12.8 ms | 1.54 ms |
-| `locate_preamble` (threshold 0 / 50) | 15.6 / 10.5 ms | 1.64 / 1.22 ms |
-| `coherent_decode` (full / stopped at the gate) | 11.8 / 5.5 µs | 1.80 / 0.81 µs |
+| `upsample12` | 7.17 ms | 1.27 ms |
+| `locate_preamble` (any threshold) | 5.26 ms | 0.50 ms |
+| `decode_bits` (7 bytes) | 253 ns | 26 ns |
+| `coherent_decode` (full / stopped at the gate) | 10.1 / 4.7 µs | 1.80 / 0.82 µs |
 
-With the square root within ±1 and the ARMv7 changes in "Decisions and why":
-`upsample12` 10.27 ms (Pi 5 1.49 ms); `locate_preamble` 20.0 / 10.1 ms (Pi 5
-2.37 / 1.03 ms; threshold 0 is slower because every block takes the exact
-path, which decoding never does); `coherent_decode` 10.1 / 4.7 µs (Pi 5
-unchanged). A 20 s decode of the first 20 s of the Pi 4 capture (threshold 28)
-takes 11.4 s, 57% of one core.
-
-So a Pi 3B can run it live, at roughly 65–70% of one core once USB input and
+So a Pi 3B can run it live, at roughly 45% of one core once USB input and
 the rest are added (on the Pi 4 they add about 4 points). The upsampler and
-preamble search, about 80% of it, cost the same whatever the traffic. The
-risk is thermal throttling: at 600 MHz it could not keep up, so a heatsink
-is advisable. With `--no-coherent` it is about 55%.
-
-With the 8-bit log power (first 20 s of the second Pi 4 capture, against dev
-on the same file): 11.75 → 8.96 s of CPU (−24%), 34,826 → 35,064 messages,
-130 aircraft both; `upsample12` 8.43 ms, `locate_preamble` 5.21 ms at any
-threshold, `decode_bits` 245 ns.
+preamble search, over half of it, cost the same whatever the traffic. Earlier
+builds (square root, divide, single-byte stores) needed 63% of a core, and at
+600 MHz (thermal throttling) could not keep up, so a heatsink is still
+advisable. The steps that got it here are in "Decisions and why".
 
 The static `dump1090` for ARMv7 needs `-lncurses`, which the cross-compiler
 doesn't have; ncurses is only used by interactive mode, so the test build

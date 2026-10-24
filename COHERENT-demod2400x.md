@@ -331,17 +331,23 @@ implementations that give bit-identical results:
 
 | | Full decode | Stopped at the rho2 gate |
 |---|---|---|
-| Generic C (Pi 5) | 5.3 µs | 1.9 µs |
-| NEON, aarch64 (Pi 5) | 2.4 µs | 1.03 µs |
-| NEON, ARMv7 (Pi 5, 32-bit) | 2.8 µs | 1.21 µs |
-| NEON, ARMv7 (Pi 3B, 32-bit) | 13.0 µs | 5.7 µs |
+| Generic C (Pi 5) | 5.0 µs | 1.94 µs |
+| NEON, aarch64 (Pi 5) | 2.08 µs | 0.96 µs |
+| NEON, ARMv7 (Pi 5, 32-bit) | 2.46 µs | 1.12 µs |
+| NEON, ARMv7 (Pi 3B, 32-bit) | 10.8 µs | 5.0 µs |
+| Generic C (x86-64) | 4.8 µs | 2.0 µs |
+| AVX2 (x86-64) | 1.30 µs | 0.61 µs |
 
 With the earlier ±62 kHz search the same kernel took 1.80 / 0.81 µs (Pi 5 NEON),
 3.40 / 1.53 µs (Pi 4), 10.1 / 4.7 µs (Pi 3B), and on x86-64 3.6 / 1.5 µs
-(generic) and 1.04 / 0.48 µs (AVX2); the Pi 4 and x86 haven't been re-timed.
+(generic) and 1.04 / 0.48 µs (AVX2); the Pi 4 hasn't been re-timed. The NEON
+figures are after the A53-oriented rewrite of the NEON kernel (lane multiplies in
+the searches, chips by tap set; see NOTES), which took the Pi 3B from 12.15 /
+5.73 µs and the Pi 5 from about 2.23 µs.
 
 Most frames stop at the gate, so the cost is dominated by the first half:
-interpolating its 112 complex chips (about half the time), converting them to
+interpolating its 112 complex chips (the largest part: over a third on the Pi
+3B), converting them to
 int16, the frequency search and the correlation. A full decode does all of
 that twice.
 

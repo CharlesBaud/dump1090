@@ -53,6 +53,6 @@ decode_bits                              generic_x86_avx2                       
 decode_bits                              generic_generic                           # 50 / 14865 ns/call
 
 # DEMOD_2400X coherent decode, measured with starch-benchmark -i 5 (x86-64 with AVX2; full decode / stopped at the gate)
-coherent_decode                          avx2_x86_avx2                             # 1038 / 481 ns/call
-coherent_decode                          generic_x86_avx2                          # 3016 / 1169 ns/call
-coherent_decode                          generic_generic                           # 3567 / 1470 ns/call
+coherent_decode                          avx2_x86_avx2                             # 1298 / 606 ns/call
+coherent_decode                          generic_x86_avx2                          # 3675 / 1481 ns/call
+coherent_decode                          generic_generic                           # 4778 / 2041 ns/call

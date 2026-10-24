@@ -620,60 +620,97 @@ void coh_rot_neon(int16x8_t xr, int16x8_t xi, int16x8_t pr, int16x8_t pi, int16x
     *ri = vaddq_s16(vqrdmulhq_s16(xr, pi), vqrdmulhq_s16(xi, pr));
 }
 
-// One chip's partial sums, I/Q kept interleaved: 8 complex taps loaded as they are and
-// multiplied by the interleaved coefficients [c0, c0, c1, c1, ..] (ci[0] taps 0..3,
-// ci[1] taps 4..7), giving lanes [I, Q, I, Q] (each I and Q split over two lanes).
-// The 5 tap sets alternate with the chip because 6k mod 5 = k mod 5
+// One chip's partial sums, I/Q kept interleaved: 8 complex taps from p loaded as they
+// are and multiplied by the interleaved coefficients c = [c0, c0, c1, c1, ..] (c[0] taps
+// 0..3, c[1] taps 4..7), giving lanes [I, Q, I, Q] (each I and Q split over two lanes)
 static inline __attribute__((always_inline))
-int32x4_t coh_chip_partial_neon(const int16_t *iq, int t, const int16x8_t (*ci)[2])
+int32x4_t coh_chip_partial_neon(const int16_t *p, const int16x8_t *c)
 {
-    const int n = t / 5, c = t % 5;
-    const int16x8_t v0 = vld1q_s16(iq + 2 * n), v1 = vld1q_s16(iq + 2 * n + 8);
-    int32x4_t s = vmull_s16(vget_low_s16(v0), vget_low_s16(ci[c][0]));
-    s = vmlal_s16(s, vget_high_s16(v0), vget_high_s16(ci[c][0]));
-    s = vmlal_s16(s, vget_low_s16(v1), vget_low_s16(ci[c][1]));
-    return vmlal_s16(s, vget_high_s16(v1), vget_high_s16(ci[c][1]));
+    const int16x8_t v0 = vld1q_s16(p), v1 = vld1q_s16(p + 8);
+    int32x4_t s = vmull_s16(vget_low_s16(v0), vget_low_s16(c[0]));
+    s = vmlal_s16(s, vget_high_s16(v0), vget_high_s16(c[0]));
+    s = vmlal_s16(s, vget_low_s16(v1), vget_low_s16(c[1]));
+    return vmlal_s16(s, vget_high_s16(v1), vget_high_s16(c[1]));
 }
 
-// Chips of bits 0 .. n-1 (n even), int32 I/Q interleaved, in chip order
-// (a, b of each bit): c32[2k] = I, c32[2k+1] = Q of chip k
-static void coh_chips32_neon(const int16_t *iq, int pos, int n, const int16x8_t *cv,
-                             const int16x8_t (*ci)[2], int32_t *c32)
+// Chips of the 56 bits of a half, int32 I/Q interleaved, in chip order (a, b of each
+// bit): c32[2k] = I, c32[2k+1] = Q of chip k; returns the largest |I| or |Q|.
+// Chip k is at 12 MHz position t0 + 6k, and 6k mod 5 = k mod 5, so chips j, j+5, j+10, ..
+// share one tap set, kept in registers, and are 6 samples apart. Each chip's partial sums
+// fold to [I, Q] with a 64-bit add, with no moves out of the NEON registers (which stall
+// an in-order core such as the Cortex-A53)
+static uint32_t coh_chips32_neon(const int16_t *iq, int pos, const int16x8_t (*ci)[2], int32_t *c32)
 {
-    // Two chips at a time: the 64-bit halves of their partial sums, paired and added,
-    // give [I0, Q0, I1, Q1] directly in the interleaved layout, with no moves out of
-    // the NEON registers (which stall an in-order core such as the Cortex-A53)
-    (void) cv;
-    for (int k = 0; k < 2 * n; k += 4) {
-        const int t = pos + COH_DATA_OFFSET + 6 * k;
-        const int32x4_t s0 = coh_chip_partial_neon(iq, t, ci), s1 = coh_chip_partial_neon(iq, t + 6, ci);
-        const int32x4_t s2 = coh_chip_partial_neon(iq, t + 12, ci), s3 = coh_chip_partial_neon(iq, t + 18, ci);
-#ifdef __aarch64__
-#define COH_FOLD(a, b) vaddq_s32(vreinterpretq_s32_s64(vzip1q_s64(vreinterpretq_s64_s32(a), vreinterpretq_s64_s32(b))), \
-                                 vreinterpretq_s32_s64(vzip2q_s64(vreinterpretq_s64_s32(a), vreinterpretq_s64_s32(b))))
-#else
-#define COH_FOLD(a, b) vaddq_s32(vcombine_s32(vget_low_s32(a), vget_low_s32(b)), vcombine_s32(vget_high_s32(a), vget_high_s32(b)))
-#endif
-        vst1q_s32(c32 + 2 * k, COH_FOLD(s0, s1));
-        vst1q_s32(c32 + 2 * k + 4, COH_FOLD(s2, s3));
-#undef COH_FOLD
+    uint32x2_t mx = vdup_n_u32(0);
+    for (int j = 0; j < 5; j++) {
+        const int t = pos + COH_DATA_OFFSET + 6 * j;
+        const int16x8_t *c = ci[t % 5];
+        const int16_t *p = iq + 2 * (t / 5);
+        int k = j;
+        // 4 chips at a time, step by step, so an in-order core overlaps their latencies
+        for (; k + 15 < 2 * COH_HALF; k += 20, p += 48) {
+            // the 4 windows (12 int16 apart, p .. p + 51) from 7 loads, 3 parts by vext
+            // (none reads past the last window)
+            const int16x8_t a0 = vld1q_s16(p), a1 = vld1q_s16(p + 8), q2 = vld1q_s16(p + 16);
+            const int16x8_t d0 = vld1q_s16(p + 24), d1 = vld1q_s16(p + 32), q5 = vld1q_s16(p + 40), e1 = vld1q_s16(p + 44);
+            const int16x8_t b0 = vextq_s16(a1, q2, 4), b1 = vextq_s16(q2, d0, 4), e0 = vextq_s16(d1, q5, 4);
+            int32x4_t sa = vmull_s16(vget_low_s16(a0), vget_low_s16(c[0]));
+            int32x4_t sb = vmull_s16(vget_low_s16(b0), vget_low_s16(c[0]));
+            int32x4_t sd = vmull_s16(vget_low_s16(d0), vget_low_s16(c[0]));
+            int32x4_t se = vmull_s16(vget_low_s16(e0), vget_low_s16(c[0]));
+            sa = vmlal_s16(sa, vget_high_s16(a0), vget_high_s16(c[0]));
+            sb = vmlal_s16(sb, vget_high_s16(b0), vget_high_s16(c[0]));
+            sd = vmlal_s16(sd, vget_high_s16(d0), vget_high_s16(c[0]));
+            se = vmlal_s16(se, vget_high_s16(e0), vget_high_s16(c[0]));
+            sa = vmlal_s16(sa, vget_low_s16(a1), vget_low_s16(c[1]));
+            sb = vmlal_s16(sb, vget_low_s16(b1), vget_low_s16(c[1]));
+            sd = vmlal_s16(sd, vget_low_s16(d1), vget_low_s16(c[1]));
+            se = vmlal_s16(se, vget_low_s16(e1), vget_low_s16(c[1]));
+            sa = vmlal_s16(sa, vget_high_s16(a1), vget_high_s16(c[1]));
+            sb = vmlal_s16(sb, vget_high_s16(b1), vget_high_s16(c[1]));
+            sd = vmlal_s16(sd, vget_high_s16(d1), vget_high_s16(c[1]));
+            se = vmlal_s16(se, vget_high_s16(e1), vget_high_s16(c[1]));
+            const int32x2_t va = vadd_s32(vget_low_s32(sa), vget_high_s32(sa)), vb = vadd_s32(vget_low_s32(sb), vget_high_s32(sb));
+            const int32x2_t vd = vadd_s32(vget_low_s32(sd), vget_high_s32(sd)), ve = vadd_s32(vget_low_s32(se), vget_high_s32(se));
+            vst1_s32(c32 + 2 * k, va);
+            vst1_s32(c32 + 2 * k + 10, vb);
+            vst1_s32(c32 + 2 * k + 20, vd);
+            vst1_s32(c32 + 2 * k + 30, ve);
+            mx = vmax_u32(mx, vmax_u32(vreinterpret_u32_s32(vabs_s32(va)), vreinterpret_u32_s32(vabs_s32(vb))));
+            mx = vmax_u32(mx, vmax_u32(vreinterpret_u32_s32(vabs_s32(vd)), vreinterpret_u32_s32(vabs_s32(ve))));
+        }
+        for (; k < 2 * COH_HALF; k += 5, p += 12) {
+            const int32x4_t s = coh_chip_partial_neon(p, c);
+            const int32x2_t v = vadd_s32(vget_low_s32(s), vget_high_s32(s));
+            vst1_s32(c32 + 2 * k, v);
+            mx = vmax_u32(mx, vreinterpret_u32_s32(vabs_s32(v)));
+        }
     }
+    return vget_lane_u32(vpmax_u32(mx, mx), 0);
 }
 
-// int32 chips of bits 0 .. n-1 -> int16 a/b (shift, clamp), 4 bits at a time
+// int32 chips of bits 0 .. n-1 -> int16 a/b (shift, clamp), 4 bits at a time. The
+// shift (coh_shift of the largest |I| or |Q|) leaves every value in -2^13 .. 2^13 - 1,
+// so it narrows to int16 first, and only -2^13 needs the clamp to -(2^13 - 1);
+// [aI aQ bI bQ] of 4 bits are then transposed with vtrn (no vld4)
 static void coh_chips16_neon(const int32_t *c32, int n, int shift,
                              int16_t *ar, int16_t *ai, int16_t *br, int16_t *bi)
 {
     const int32x4_t sh = vdupq_n_s32(-shift);
-    const int32x4_t lim = vdupq_n_s32((1 << COH_CHIP_BITS) - 1), nlim = vdupq_n_s32(-((1 << COH_CHIP_BITS) - 1));
+    const int16x8_t nlim = vdupq_n_s16(-((1 << COH_CHIP_BITS) - 1));
     for (int i = 0; i < n; i += 4) {
-        const int32x4x4_t v = vld4q_s32(c32 + 4 * i);       // a.re, a.im, b.re, b.im of 4 bits
-#define COH_CONV(v) vmovn_s32(vmaxq_s32(vminq_s32(vshlq_s32(v, sh), lim), nlim))
-        vst1_s16(ar + i, COH_CONV(v.val[0]));
-        vst1_s16(ai + i, COH_CONV(v.val[1]));
-        vst1_s16(br + i, COH_CONV(v.val[2]));
-        vst1_s16(bi + i, COH_CONV(v.val[3]));
-#undef COH_CONV
+#define COH_N2(k) vmaxq_s16(vcombine_s16(vmovn_s32(vshlq_s32(vld1q_s32(c32 + 4 * i + 8 * (k)), sh)), \
+                                                   vmovn_s32(vshlq_s32(vld1q_s32(c32 + 4 * i + 8 * (k) + 4), sh))), nlim)
+        const int16x8_t x01 = COH_N2(0), x23 = COH_N2(1);      // bits i, i+1 and i+2, i+3
+#undef COH_N2
+        const int16x4x2_t t01 = vtrn_s16(vget_low_s16(x01), vget_high_s16(x01));  // [aI0 aI1 bI0 bI1], [aQ0 aQ1 bQ0 bQ1]
+        const int16x4x2_t t23 = vtrn_s16(vget_low_s16(x23), vget_high_s16(x23));
+        const int32x2x2_t re = vtrn_s32(vreinterpret_s32_s16(t01.val[0]), vreinterpret_s32_s16(t23.val[0]));
+        const int32x2x2_t im = vtrn_s32(vreinterpret_s32_s16(t01.val[1]), vreinterpret_s32_s16(t23.val[1]));
+        vst1_s16(ar + i, vreinterpret_s16_s32(re.val[0]));
+        vst1_s16(br + i, vreinterpret_s16_s32(re.val[1]));
+        vst1_s16(ai + i, vreinterpret_s16_s32(im.val[0]));
+        vst1_s16(bi + i, vreinterpret_s16_s32(im.val[1]));
     }
 }
 
@@ -694,7 +731,18 @@ void coh_wide_regroup_neon(const int16_t *wr, const int16_t *wi, int k, int16_t 
     }
 }
 
-static int coh_half_neon(const int16_t *iq, int pos, int first, unsigned thres, const int16x8_t *cv,
+// One block of a bin search: block m (lane l of the int16x4 pair wr, wi) rotated by
+// the 8 bins j.. of table t (t##_re/im[m][j]) and added to the accumulators. A lane
+// multiply instead of a broadcast; vqrdmulh is symmetric, so the products are those of
+// coh_rot_neon, and the int16 adds wrap, so splitting them over two accumulators
+// gives the same sums
+#define COH_LROT(t, j, accr, acci, wr, wi, l, m) do { \
+        const int16x8_t _tr = vld1q_s16(&t##_re[m][j]), _ti = vld1q_s16(&t##_im[m][j]); \
+        accr = vaddq_s16(accr, vsubq_s16(vqrdmulhq_lane_s16(_tr, wr, l), vqrdmulhq_lane_s16(_ti, wi, l))); \
+        acci = vaddq_s16(acci, vaddq_s16(vqrdmulhq_lane_s16(_ti, wr, l), vqrdmulhq_lane_s16(_tr, wi, l))); \
+    } while (0)
+
+static int coh_half_neon(const int16_t *iq, int pos, int first, unsigned thres,
                          const int16x8_t (*ci)[2], uint8_t *out, uint32_t *rho2_out, uint32_t *f_out, uint32_t *k_out, uint32_t *q)
 {
     int32_t c32[4 * COH_HALF] __attribute__((aligned(16)));
@@ -702,18 +750,7 @@ static int coh_half_neon(const int16_t *iq, int pos, int first, unsigned thres, 
     int16_t Pr[COH_HALF], Pi[COH_HALF], Qr[COH_HALF], Qi[COH_HALF];
 
     // Chips and their shift
-    coh_chips32_neon(iq, pos + 12 * first, COH_HALF, cv, ci, c32);
-    uint32x4_t mx = vdupq_n_u32(0);
-    for (int k = 0; k < 4 * COH_HALF; k += 8) {
-        mx = vmaxq_u32(mx, vreinterpretq_u32_s32(vabsq_s32(vld1q_s32(c32 + k))));
-        mx = vmaxq_u32(mx, vreinterpretq_u32_s32(vabsq_s32(vld1q_s32(c32 + k + 4))));
-    }
-#ifdef __aarch64__
-    const uint32_t cmax = vmaxvq_u32(mx);
-#else
-    uint32x2_t m2 = vmax_u32(vget_low_u32(mx), vget_high_u32(mx));
-    const uint32_t cmax = vget_lane_u32(vpmax_u32(m2, m2), 0);
-#endif
+    const uint32_t cmax = coh_chips32_neon(iq, pos + 12 * first, ci, c32);
     const int cs = coh_shift(cmax, COH_CHIP_BITS);
     coh_chips16_neon(c32, COH_HALF, cs, ar, ai, br, bi);
 
@@ -753,15 +790,19 @@ static int coh_half_neon(const int16_t *iq, int pos, int first, unsigned thres, 
     int kc[2];
     for (int h = 0; h < 2; h++) {
         int32_t p1[COH_WBINS] __attribute__((aligned(16)));
+        const int16_t *pr = wr + h * COH_WBLK / 2, *pi = wi + h * COH_WBLK / 2;
+        const int16x4_t r0 = vld1_s16(pr), r1 = vld1_s16(pr + 4), r2 = vld1_s16(pr + 8), r3 = vld1_s16(pr + 12);
+        const int16x4_t i0 = vld1_s16(pi), i1 = vld1_s16(pi + 4), i2 = vld1_s16(pi + 8), i3 = vld1_s16(pi + 12);
         for (int j = 0; j < COH_WBINS; j += 8) {
-            int16x8_t sre16 = vdupq_n_s16(0), sim16 = vdupq_n_s16(0);
-            for (int m = 0; m < COH_WBLK / 2; m++) {
-                int16x8_t rr, ri;
-                coh_rot_neon(vdupq_n_s16(wr[h * COH_WBLK / 2 + m]), vdupq_n_s16(wi[h * COH_WBLK / 2 + m]),
-                             vld1q_s16(&coh_wide_re[m][j]), vld1q_s16(&coh_wide_im[m][j]), &rr, &ri);
-                sre16 = vaddq_s16(sre16, rr);
-                sim16 = vaddq_s16(sim16, ri);
-            }
+            int16x8_t ar0 = vdupq_n_s16(0), ai0 = vdupq_n_s16(0), ar1 = vdupq_n_s16(0), ai1 = vdupq_n_s16(0);
+            COH_LROT(coh_wide, j, ar0, ai0, r0, i0, 0, 0);  COH_LROT(coh_wide, j, ar1, ai1, r0, i0, 1, 1);
+            COH_LROT(coh_wide, j, ar0, ai0, r0, i0, 2, 2);  COH_LROT(coh_wide, j, ar1, ai1, r0, i0, 3, 3);
+            COH_LROT(coh_wide, j, ar0, ai0, r1, i1, 0, 4);  COH_LROT(coh_wide, j, ar1, ai1, r1, i1, 1, 5);
+            COH_LROT(coh_wide, j, ar0, ai0, r1, i1, 2, 6);  COH_LROT(coh_wide, j, ar1, ai1, r1, i1, 3, 7);
+            COH_LROT(coh_wide, j, ar0, ai0, r2, i2, 0, 8);  COH_LROT(coh_wide, j, ar1, ai1, r2, i2, 1, 9);
+            COH_LROT(coh_wide, j, ar0, ai0, r2, i2, 2, 10); COH_LROT(coh_wide, j, ar1, ai1, r2, i2, 3, 11);
+            COH_LROT(coh_wide, j, ar0, ai0, r3, i3, 0, 12); COH_LROT(coh_wide, j, ar1, ai1, r3, i3, 1, 13);
+            const int16x8_t sre16 = vaddq_s16(ar0, ar1), sim16 = vaddq_s16(ai0, ai1);
             vst1q_s32(p1 + j, vmlal_s16(vmull_s16(vget_low_s16(sre16), vget_low_s16(sre16)), vget_low_s16(sim16), vget_low_s16(sim16)));
             vst1q_s32(p1 + j + 4, vmlal_s16(vmull_s16(vget_high_s16(sre16), vget_high_s16(sre16)), vget_high_s16(sim16), vget_high_s16(sim16)));
         }
@@ -772,18 +813,17 @@ static int coh_half_neon(const int16_t *iq, int pos, int first, unsigned thres, 
     int k = kc[0], f = 0;
     int32_t pbest = -1;
     for (int c = 0; c < (kc[1] != kc[0] ? 2 : 1); c++) {
-        int16_t br8[8] __attribute__((aligned(8))), bi8[8] __attribute__((aligned(8)));
+        int16_t br8[8] __attribute__((aligned(8))) = { 0 }, bi8[8] __attribute__((aligned(8))) = { 0 };
         coh_wide_regroup_neon(wr, wi, kc[c], br8, bi8);
         int32_t p[COH_BINS_PAD] __attribute__((aligned(16))) = { 0 };
+        const int16x4_t r0 = vld1_s16(br8), r1 = vld1_s16(br8 + 4), i0 = vld1_s16(bi8), i1 = vld1_s16(bi8 + 4);
         for (int j = COH_REF_LO; j < COH_REF_HI; j += 8) {
-            int16x8_t sre16 = vdupq_n_s16(0), sim16 = vdupq_n_s16(0);
-            for (int m = 0; m < COH_NBLOCKS; m++) {
-                int16x8_t rr, ri;
-                coh_rot_neon(vdupq_n_s16(br8[m]), vdupq_n_s16(bi8[m]),
-                             vld1q_s16(&coh_bin_re[m][j]), vld1q_s16(&coh_bin_im[m][j]), &rr, &ri);
-                sre16 = vaddq_s16(sre16, rr);
-                sim16 = vaddq_s16(sim16, ri);
-            }
+            int16x8_t ar0 = vdupq_n_s16(0), ai0 = vdupq_n_s16(0), ar1 = vdupq_n_s16(0), ai1 = vdupq_n_s16(0);
+            COH_LROT(coh_bin, j, ar0, ai0, r0, i0, 0, 0); COH_LROT(coh_bin, j, ar1, ai1, r0, i0, 1, 1);
+            COH_LROT(coh_bin, j, ar0, ai0, r0, i0, 2, 2); COH_LROT(coh_bin, j, ar1, ai1, r0, i0, 3, 3);
+            COH_LROT(coh_bin, j, ar0, ai0, r1, i1, 0, 4); COH_LROT(coh_bin, j, ar1, ai1, r1, i1, 1, 5);
+            COH_LROT(coh_bin, j, ar0, ai0, r1, i1, 2, 6);
+            const int16x8_t sre16 = vaddq_s16(ar0, ar1), sim16 = vaddq_s16(ai0, ai1);
             vst1q_s32(p + j, vmlal_s16(vmull_s16(vget_low_s16(sre16), vget_low_s16(sre16)), vget_low_s16(sim16), vget_low_s16(sim16)));
             vst1q_s32(p + j + 4, vmlal_s16(vmull_s16(vget_high_s16(sre16), vget_high_s16(sre16)), vget_high_s16(sim16), vget_high_s16(sim16)));
         }
@@ -868,10 +908,10 @@ static int coh_half_neon(const int16_t *iq, int pos, int first, unsigned thres, 
 void STARCH_IMPL(coherent_decode, neon) (const int16_t * restrict iq, int pos, unsigned thres,
                                          uint8_t * restrict out, uint32_t * restrict info)
 {
-    int16x8_t cv[5], ci[5][2];
+    int16x8_t ci[5][2];
     for (int c = 0; c < 5; c++) {
-        cv[c] = vmovl_s8(vld1_s8(upsample_coeffs[c]));
-        const int16x8x2_t z = vzipq_s16(cv[c], cv[c]);        // [c0, c0, c1, c1, ..]
+        const int16x8_t cv = vmovl_s8(vld1_s8(upsample_coeffs[c]));
+        const int16x8x2_t z = vzipq_s16(cv, cv);        // [c0, c0, c1, c1, ..]
         ci[c][0] = z.val[0];
         ci[c][1] = z.val[1];
     }
@@ -879,12 +919,12 @@ void STARCH_IMPL(coherent_decode, neon) (const int16_t * restrict iq, int pos, u
     memset(out, 0, 14);
     memset(info, 0, COH_INFO_N * sizeof(*info));
 
-    if (!coh_half_neon(iq, pos, 0, thres, cv, (const int16x8_t (*)[2]) ci, out,
+    if (!coh_half_neon(iq, pos, 0, thres, (const int16x8_t (*)[2]) ci, out,
                        &info[COH_INFO_RHO2], &info[COH_INFO_FINE], &info[COH_INFO_WIDE], &info[COH_INFO_Q1]))
         return;
     info[COH_INFO_DECODED] = 1;
     // The second half whatever the DF says (as the magnitude decoder): scoring can
     // correct the DF bits, and every short DF is one bit from a long one
-    coh_half_neon(iq, pos, COH_HALF, 0, cv, (const int16x8_t (*)[2]) ci, out,
+    coh_half_neon(iq, pos, COH_HALF, 0, (const int16x8_t (*)[2]) ci, out,
                   &info[COH_INFO_RHO2B], &info[COH_INFO_FINE2], &info[COH_INFO_WIDE2], &info[COH_INFO_Q2]);
 }

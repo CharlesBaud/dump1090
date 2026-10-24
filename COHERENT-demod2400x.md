@@ -189,8 +189,8 @@ Raspberry Pi 5 (comparisons with stock dump1090 are in
 | Aircraft | 139 | 155 |
 | Demodulation CPU | 3.0 s | 3.8 s |
 
-The coherent pass itself takes about 0.95 s for the 60 s of signal. Searching
-±250 kHz instead of the earlier ±62 kHz added 2.7–4.6% messages on the three
+The coherent pass itself takes about 0.95 s for the 60 s of signal. Widening the
+search to ±250 kHz added 2.7–4.6% messages on the three
 test captures (RTL-SDR a and b, SDRplay at 5 MHz) for 2–9% more demodulation
 CPU, the same as an exact float search over ±248 kHz.
 
@@ -236,29 +236,29 @@ each period's `local` section, and `--stats` prints them too:
 
 ## What the carriers show
 
-The coherent pass needs a steady carrier. With the earlier ±62 kHz search it
+The coherent pass needs a steady carrier. With the earlier, narrower search it
 gave up on about a quarter of aircraft: of the 122 aircraft with 30 or more
 frames in the 60 s RTL-SDR capture, 87 were coherent in over 90% of their frames, 32 in under 10%, and
 only 3 in between. To see why, the complex chips of every accepted frame were
 dumped (`COHERENT_SAMPLES`) and the carrier followed through each burst: the
 phase step from one bit's pulse to the next gives the frequency every
-microsecond, unambiguously up to ±500 kHz, far beyond the ±62 kHz the pass
+microsecond, unambiguously up to ±500 kHz, far beyond what the pass
 then searched. Long frames with a bit SNR above 15 dB, aircraft with at least 15 of
 them; "drift" is the frequency over the last third of the burst minus the
 first third (about 74 µs apart):
 
 | Aircraft (callsign, registration, type) | Coherent frames | Offset | Spread between frames | Drift in a burst | What it is |
 |---|---|---|---|---|---|
-| VLG8961, EC-OFZ, A320 | 0% | +237.6 kHz | 2.0 kHz | −3.0 kHz | steady, outside ±62 kHz |
-| SHT9K, G-EUUU, A320 | 0% | +178.0 kHz | 1.4 kHz | −2.5 kHz | steady, outside ±62 kHz |
-| EFW29BA, G-EUUT, A320 | 0% | +155.9 kHz | 1.3 kHz | −2.1 kHz | steady, outside ±62 kHz |
-| EZY81QG, G-EJCC, A320 | 0% | +148.2 kHz | 1.2 kHz | −8.4 kHz | steady, outside ±62 kHz |
-| RYR71LE, EI-EKT, B738 | 0% | +136.3 kHz | 1.2 kHz | −3.0 kHz | steady, outside ±62 kHz |
-| VLG6023, EC-MBS, A320 | 0% | +130.9 kHz | 1.0 kHz | −2.4 kHz | steady, outside ±62 kHz |
-| RYR3TU, SP-RZN, B38M | 0% | +118.2 kHz | 1.1 kHz | −1.2 kHz | steady, outside ±62 kHz |
-| EZY79NW, G-EJCA, A320 | 0% | +117.2 kHz | 14.5 kHz | −0.9 kHz | outside ±62 kHz, less steady |
-| BAW586M, G-EUPG, A319 | 0% | +113.8 kHz | 0.8 kHz | −2.3 kHz | steady, outside ±62 kHz |
-| GVCRM (not in the database) | 0% | −114.8 kHz | 0.6 kHz | +2.3 kHz | steady, outside ±62 kHz |
+| VLG8961, EC-OFZ, A320 | 0% | +237.6 kHz | 2.0 kHz | −3.0 kHz | steady, outside the earlier search |
+| SHT9K, G-EUUU, A320 | 0% | +178.0 kHz | 1.4 kHz | −2.5 kHz | steady, outside the earlier search |
+| EFW29BA, G-EUUT, A320 | 0% | +155.9 kHz | 1.3 kHz | −2.1 kHz | steady, outside the earlier search |
+| EZY81QG, G-EJCC, A320 | 0% | +148.2 kHz | 1.2 kHz | −8.4 kHz | steady, outside the earlier search |
+| RYR71LE, EI-EKT, B738 | 0% | +136.3 kHz | 1.2 kHz | −3.0 kHz | steady, outside the earlier search |
+| VLG6023, EC-MBS, A320 | 0% | +130.9 kHz | 1.0 kHz | −2.4 kHz | steady, outside the earlier search |
+| RYR3TU, SP-RZN, B38M | 0% | +118.2 kHz | 1.1 kHz | −1.2 kHz | steady, outside the earlier search |
+| EZY79NW, G-EJCA, A320 | 0% | +117.2 kHz | 14.5 kHz | −0.9 kHz | outside the earlier search, less steady |
+| BAW586M, G-EUPG, A319 | 0% | +113.8 kHz | 0.8 kHz | −2.3 kHz | steady, outside the earlier search |
+| GVCRM (not in the database) | 0% | −114.8 kHz | 0.6 kHz | +2.3 kHz | steady, outside the earlier search |
 | KLC85F, PH-NXG, E295 | 0% | +28.4 kHz | 2.3 kHz | −80.0 kHz | settles during the burst |
 | G-DOSC, DA42 | 1% | −22.1 kHz | 0.7 kHz | −0.8 kHz | phase wanders |
 | G-HLOB, C172 | 1% | −15.2 kHz | 0.9 kHz | −6.4 kHz | phase wanders |
@@ -275,7 +275,7 @@ registration and type from the aircraft database that ships with dump1090.
   inside a burst VLG6023's phase stays within about 18° of a straight line
   (6° for EZY85EC, a typical coherent aircraft). They are mostly A320-family
   and 737 airliners. Transponders are allowed ±1 MHz, so these are within
-  spec; they were simply outside the ±62 kHz then searched, and the ±250 kHz
+  spec; they were simply outside the range then searched, and the ±250 kHz
   search now covers them.
 * **One transmitter settles during the burst.** KLC85F (PH-NXG, an Embraer
   E195-E2) starts each frame at about +100 kHz for the first 30 µs or so,
@@ -338,7 +338,7 @@ implementations that give bit-identical results:
 | Generic C (x86-64) | 4.8 µs | 2.0 µs |
 | AVX2 (x86-64) | 1.30 µs | 0.61 µs |
 
-With the earlier ±62 kHz search the same kernel took 1.80 / 0.81 µs (Pi 5 NEON),
+With the earlier, narrower search the same kernel took 1.80 / 0.81 µs (Pi 5 NEON),
 3.40 / 1.53 µs (Pi 4), 10.1 / 4.7 µs (Pi 3B), and on x86-64 3.6 / 1.5 µs
 (generic) and 1.04 / 0.48 µs (AVX2); the Pi 4 hasn't been re-timed. The NEON
 figures are after the A53-oriented rewrite of the NEON kernel (lane multiplies in

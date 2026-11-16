@@ -66,6 +66,7 @@ struct stats {
     uint32_t demod_coherent_coherent;   // ... and the carrier was coherent (rho2 gate)
     uint32_t demod_coherent_rescued;    // ... and the coherent bits passed the CRC
     uint32_t demod_coherent_repaired;   // ... of those, after soft-decision repair
+    uint32_t demod_magnitude_repaired;  // soft-decision repair from the magnitude bits (not in rescued)
 #endif
 
     // Mode A/C demodulator counts:

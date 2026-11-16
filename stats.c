@@ -98,8 +98,10 @@ void display_stats(struct stats *st) {
             printf("  %12u coherent decodes tried\n",                      st->demod_coherent_tried);
             printf("    %12u with a coherent carrier\n",                   st->demod_coherent_coherent);
             printf("    %12u rescued (included in accepted above)\n",      st->demod_coherent_rescued);
-            if (Modes.coherent_repair)
+            if (Modes.coherent_repair) {
                 printf("      %12u after soft-decision repair\n",           st->demod_coherent_repaired);
+                printf("  %12u soft-decision repairs from the magnitude bits\n", st->demod_magnitude_repaired);
+            }
         }
 #endif
 
@@ -350,6 +352,7 @@ void add_stats(const struct stats *st1, const struct stats *st2, struct stats *t
     target->demod_coherent_coherent = st1->demod_coherent_coherent + st2->demod_coherent_coherent;
     target->demod_coherent_rescued = st1->demod_coherent_rescued + st2->demod_coherent_rescued;
     target->demod_coherent_repaired = st1->demod_coherent_repaired + st2->demod_coherent_repaired;
+    target->demod_magnitude_repaired = st1->demod_magnitude_repaired + st2->demod_magnitude_repaired;
 #endif
     target->demod_modeac = st1->demod_modeac + st2->demod_modeac;
 

@@ -11,8 +11,8 @@ be switched off when running:
 * `--no-demod2400x`: the stock demodulator, exactly as upstream (stock
   converters, magnitudes in the FIFO; output byte-identical to upstream `dev`);
 * `--no-coherent`: DEMOD_2400X without the coherent pass;
-* `--no-soft-fix`: the coherent pass without its soft-decision repair of
-  DF17/18.
+* `--no-soft-fix`: without the soft-decision repair of DF17/18 (from the
+  coherent or the magnitude bits).
 
 In outline:
 

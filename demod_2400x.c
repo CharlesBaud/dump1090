@@ -470,7 +470,7 @@ static int emitFrame(const struct mag_buf *mag, const struct candidate *c,
             // aircraft already seen (the CRC is all that checks the flipped bits)
             if (Modes.coherent_repair && s2 < SR_ACCEPT_THRESHOLD) {
                 struct candidate rep = cc;
-                const int flips = coherentRepair(rep.msg, rel);
+                const int flips = softRepair(rep.msg, rel);
                 if (flips) {
                     const int sr = scoreModesMessage(rep.msg);
                     if (sr >= SR_ACCEPT_THRESHOLD && scoreIsKnown(sr)) {
@@ -496,6 +496,32 @@ static int emitFrame(const struct mag_buf *mag, const struct candidate *c,
             }
         }
         coh_stats.seconds += cohNow() - t0;
+    }
+
+    // The same repair from the magnitude bits, whose reliability is the log power
+    // contrast of each bit's two chips: for transmitters without a steady carrier,
+    // and coherent frames the coherent repair couldn't fix. Only fairly clean frames:
+    // below the gate most candidates are noise, and the search costs CPU
+    if (Modes.coherent && Modes.coherent_repair && score < SR_ACCEPT_THRESHOLD &&
+        mag_c->quality >= COHERENT_REPAIR_MAG_GATE) {
+        const uint8_t *chip = &st->udata[(mag_c->pos % 6) * NU_STRIDE(nt) + mag_c->pos / 6 + 16];
+        uint16_t mrel[MODES_LONG_MSG_BITS];
+        for (int i = 0; i < MODES_LONG_MSG_BITS; i++) {
+            const int d = chip[2 * i + 1] - chip[2 * i];
+            mrel[i] = (uint16_t) (d < 0 ? -d : d);
+        }
+        struct candidate rep = *mag_c;
+        const int flips = softRepair(rep.msg, mrel);
+        if (flips) {
+            const int sr = scoreModesMessage(rep.msg);
+            if (sr >= SR_ACCEPT_THRESHOLD && scoreIsKnown(sr)) {
+                cc = rep;
+                c = &cc;
+                score = sr;
+                repaired = flips;
+                Modes.stats_current.demod_magnitude_repaired++;
+            }
+        }
     }
 #endif /* DEMOD_2400X_COHERENT */
 

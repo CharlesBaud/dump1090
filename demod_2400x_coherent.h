@@ -32,10 +32,13 @@
 #define COHERENT_DUMP   0       // 1: with COHERENT_DIAG, one line per frame (frequency, errors)
 #endif
 #ifndef COHERENT_REPAIR_BITS
-#define COHERENT_REPAIR_BITS  10      // soft-decision repair: the least reliable bits it may flip
+#define COHERENT_REPAIR_BITS  12      // soft-decision repair: the least reliable bits it may flip
 #endif
 #ifndef COHERENT_REPAIR_FLIPS
-#define COHERENT_REPAIR_FLIPS 3       // and at most this many of them at once
+#define COHERENT_REPAIR_FLIPS 4       // and at most this many of them at once
+#endif
+#ifndef COHERENT_REPAIR_MAG_GATE
+#define COHERENT_REPAIR_MAG_GATE 128u // minimum magnitude quality to repair from the magnitude bits
 #endif
 #ifndef COHERENT_SAMPLES
 #define COHERENT_SAMPLES      NULL    // file name for the chip-sample dump, e.g. "chips.bin"
@@ -54,11 +57,13 @@
 int coherentDecode(const int16_t *iq, unsigned iq_len, int pos, uint8_t *out, uint16_t *rel,
                    unsigned *q1, unsigned *q2, unsigned *rho2, unsigned *rho2b);
 
-// Soft-decision repair of coherent bits that fail the CRC: flips up to
-// COHERENT_REPAIR_FLIPS of the COHERENT_REPAIR_BITS least reliable bits and keeps
-// the cheapest combination (sum of the flipped reliabilities) that makes a DF17/18
-// with a correct CRC. Returns the number of bits flipped, with msg repaired, or 0.
-int coherentRepair(uint8_t *msg, const uint16_t *rel);
+// Soft-decision repair of bits that fail the CRC, from either decoder: rel holds
+// each bit's reliability (coherent |y_a - y_b|, or the magnitude chips' log power
+// contrast). Flips up to COHERENT_REPAIR_FLIPS of the COHERENT_REPAIR_BITS least
+// reliable bits and keeps the cheapest combination (sum of the flipped
+// reliabilities) that makes a DF17/18 with a correct CRC. Returns the number of
+// bits flipped, with msg repaired, or 0.
+int softRepair(uint8_t *msg, const uint16_t *rel);
 
 // Complex filter outputs (int32 I, Q, before rounding) at the chip centres
 // pos + 6k, k = 0 .. nchips-1: 16 preamble chips then 2 per data bit.

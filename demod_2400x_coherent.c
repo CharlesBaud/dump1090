@@ -78,7 +78,7 @@ static int dfFlippable(const uint16_t *rel, unsigned flip)
     return 1;
 }
 
-int coherentRepair(uint8_t *msg, const uint16_t *rel)
+int softRepair(uint8_t *msg, const uint16_t *rel)
 {
     // Most frames can't become a DF17/18 by flipping only unreliable bits
     const unsigned df = msg[0] >> 3;
@@ -123,44 +123,61 @@ int coherentRepair(uint8_t *msg, const uint16_t *rel)
     for (int j = 0; j < n; j++)
         syn[j] = bitSyndrome(bit[j]);
 
-    // Every combination of 1 .. COHERENT_REPAIR_FLIPS of them (indices in increasing
-    // order); the syndrome is linear, so flipping bits XORs their syndromes in
+    // A repair is two disjoint sets of at most 2 of these bits whose syndromes XOR
+    // to the frame's (the syndrome is linear, so flipping bits XORs theirs in). The
+    // sets (the empty one too) go in a small hash table by syndrome, and each is
+    // looked up against the frame's syndrome XOR its own: about 80 lookups instead of
+    // trying every combination of up to 4 of 12 bits (793)
+    _Static_assert(COHERENT_REPAIR_FLIPS <= 4 && COHERENT_REPAIR_BITS <= 16, "softRepair() pairs sets of at most 2 bits");
+    struct { uint32_t syn, cost; unsigned mask; } set[1 + COHERENT_REPAIR_BITS * (COHERENT_REPAIR_BITS + 1) / 2];
+    int ns = 0;
+    set[ns].syn = 0; set[ns].cost = 0; set[ns++].mask = 0;
+    for (int i = 0; i < n; i++) {
+        set[ns].syn = syn[i]; set[ns].cost = cost[i]; set[ns++].mask = 1u << i;
+        for (int j = i + 1; j < n; j++) {
+            set[ns].syn = syn[i] ^ syn[j]; set[ns].cost = cost[i] + cost[j]; set[ns++].mask = (1u << i) | (1u << j);
+        }
+    }
+    uint8_t slot[256];                      // set index + 1 by the syndrome's low byte, linear probing
+    memset(slot, 0, sizeof(slot));
+    for (int k = 0; k < ns; k++) {
+        unsigned h = set[k].syn & 255;
+        while (slot[h])
+            h = (h + 1) & 255;
+        slot[h] = (uint8_t) (k + 1);
+    }
+
     const uint32_t s0 = modesChecksum(msg, MODES_LONG_MSG_BITS);
-    int best[COHERENT_REPAIR_FLIPS], nbest = 0;
+    unsigned best = 0;
     uint32_t best_cost = UINT32_MAX;
-    int idx[COHERENT_REPAIR_FLIPS];
-    for (int k = 1; k <= COHERENT_REPAIR_FLIPS && k <= n; k++) {
-        for (int j = 0; j < k; j++)
-            idx[j] = j;
-        for (;;) {
-            uint32_t s = s0, c = 0;
-            unsigned d = df;
-            for (int j = 0; j < k; j++) {
-                s ^= syn[idx[j]];
-                c += cost[idx[j]];
-                if (bit[idx[j]] < 5)
-                    d ^= 0x10u >> bit[idx[j]];
-            }
-            if (s == 0 && c < best_cost && (d == 17 || d == 18)) {
+    for (int k = 0; k < ns; k++) {
+        const uint32_t target = s0 ^ set[k].syn;
+        for (unsigned h = target & 255; slot[h]; h = (h + 1) & 255) {
+            const int m = slot[h] - 1;
+            if (set[m].syn != target || (set[m].mask & set[k].mask))
+                continue;
+            const unsigned mask = set[m].mask | set[k].mask;
+            const uint32_t c = set[m].cost + set[k].cost;
+            if (!mask || c >= best_cost || __builtin_popcount(mask) > COHERENT_REPAIR_FLIPS)
+                continue;
+            unsigned d = df;                // DF17/18 after the flips
+            for (int j = 0; j < n; j++)
+                if ((mask & (1u << j)) && bit[j] < 5)
+                    d ^= 0x10u >> bit[j];
+            if (d == 17 || d == 18) {
                 best_cost = c;
-                nbest = k;
-                for (int j = 0; j < k; j++)
-                    best[j] = bit[idx[j]];
+                best = mask;
             }
-            // Next combination
-            int j = k - 1;
-            while (j >= 0 && idx[j] == n - k + j)
-                j--;
-            if (j < 0)
-                break;
-            idx[j]++;
-            for (int m = j + 1; m < k; m++)
-                idx[m] = idx[m - 1] + 1;
         }
     }
 
-    for (int j = 0; j < nbest; j++)
-        msg[best[j] >> 3] ^= (uint8_t) (0x80 >> (best[j] & 7));
+    int nbest = 0;
+    for (int j = 0; j < n; j++) {
+        if (best & (1u << j)) {
+            msg[bit[j] >> 3] ^= (uint8_t) (0x80 >> (bit[j] & 7));
+            nbest++;
+        }
+    }
     return nbest;
 }
 

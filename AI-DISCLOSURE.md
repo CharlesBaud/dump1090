@@ -52,7 +52,8 @@ from my question whether the slicer could make use of the noise and signal
 power. Claude Code proposed flipping the least reliable bits under the CRC,
 measured it in Python first, wrote the code to my choices (the simpler
 scaling, on by default with a flag to disable, no static state) and ran the
-tests on the Pi 3B, Pi 4, Pi 5 and an x86 PC.
+tests on the Pi 3B, Pi 4, Pi 5 and an x86 PC. Extending it to the magnitude
+bits followed my remark that not every frame can be decoded coherently.
 
 ## How it was checked
 

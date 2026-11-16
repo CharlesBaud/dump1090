@@ -421,6 +421,10 @@ static int emitFrame(const struct mag_buf *mag, const struct candidate *c,
     const struct candidate *mag_c = c;      // the magnitude decoder's candidate
     struct candidate cc;                    // its coherent version, if that decodes
     int repaired = 0;                       // bits flipped by soft-decision repair
+    struct candidate coh_c;                 // the coherent bits before any repair, if coherent
+    int coh_ok = 0;
+    uint16_t rel[MODES_LONG_MSG_BITS];      // their reliabilities
+    uint16_t mrel[MODES_LONG_MSG_BITS];     // the magnitude bits' (quality >= COHERENT_REPAIR_MAG_GATE)
 
     // Coherent second pass for frames the magnitude bits don't decode. Only worth
     // trying for candidates whose bits already look fairly clean (quality gate);
@@ -434,7 +438,6 @@ static int emitFrame(const struct mag_buf *mag, const struct candidate *c,
         }
         const double t0 = cohNow();
         unsigned q1, rho2, rho2b;
-        uint16_t rel[MODES_LONG_MSG_BITS];
         cc = *c;
         const int qb = c->quality / 16 < 16 ? c->quality / 16 : 16;
         Modes.stats_current.demod_coherent_tried++;
@@ -448,6 +451,8 @@ static int emitFrame(const struct mag_buf *mag, const struct candidate *c,
             Modes.stats_current.demod_coherent_coherent++;
             coh_stats.coherent++;
             coh_stats.q_coherent[qb]++;
+            coh_c = cc;
+            coh_ok = 1;
             int s2 = scoreModesMessage(cc.msg);
             if (COHERENT_MIX && s2 < SR_ACCEPT_THRESHOLD) {
                 // Each half from the other decoder in turn: the coherent first half with the
@@ -505,7 +510,6 @@ static int emitFrame(const struct mag_buf *mag, const struct candidate *c,
     if (Modes.coherent && Modes.coherent_repair && score < SR_ACCEPT_THRESHOLD &&
         mag_c->quality >= COHERENT_REPAIR_MAG_GATE) {
         const uint8_t *chip = &st->udata[(mag_c->pos % 6) * NU_STRIDE(nt) + mag_c->pos / 6 + 16];
-        uint16_t mrel[MODES_LONG_MSG_BITS];
         for (int i = 0; i < MODES_LONG_MSG_BITS; i++) {
             const int d = chip[2 * i + 1] - chip[2 * i];
             mrel[i] = (uint16_t) (d < 0 ? -d : d);
@@ -520,6 +524,25 @@ static int emitFrame(const struct mag_buf *mag, const struct candidate *c,
                 score = sr;
                 repaired = flips;
                 Modes.stats_current.demod_magnitude_repaired++;
+            }
+        }
+    }
+
+    // Last, assume the frame is a DF17 from a tracked aircraft: its DF and address
+    // bits are known, which leaves the repair for the rest (coherent bits first)
+    for (int p = 0; p < 2 && Modes.coherent && Modes.coherent_repair && score < SR_ACCEPT_THRESHOLD; p++) {
+        if (p == 0 ? !coh_ok : mag_c->quality < COHERENT_REPAIR_MAG_GATE)
+            continue;
+        struct candidate rep = p == 0 ? coh_c : *mag_c;
+        const int changed = aprioriRepair(rep.msg, p == 0 ? rel : mrel);
+        if (changed) {
+            const int sr = scoreModesMessage(rep.msg);
+            if (sr >= SR_ACCEPT_THRESHOLD && scoreIsKnown(sr)) {
+                cc = rep;
+                c = &cc;
+                score = sr;
+                repaired = changed;
+                Modes.stats_current.demod_apriori_repaired++;
             }
         }
     }

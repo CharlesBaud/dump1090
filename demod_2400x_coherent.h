@@ -37,6 +37,18 @@
 #ifndef COHERENT_REPAIR_FLIPS
 #define COHERENT_REPAIR_FLIPS 4       // and at most this many of them at once
 #endif
+#ifndef COHERENT_REPAIR_MAX_COST
+#define COHERENT_REPAIR_MAX_COST   3u  // confidence: at most this many average bits' worth changed
+#endif
+#ifndef COHERENT_REPAIR_MIN_MARGIN
+#define COHERENT_REPAIR_MIN_MARGIN 1u  // ... and the next-best valid repair this much costlier
+#endif
+#ifndef COHERENT_APRIORI_WEAK
+#define COHERENT_APRIORI_WEAK      24  // tracked-aircraft repair: DF and address bits it changes must be among the frame's this many weakest
+#endif
+#ifndef COHERENT_APRIORI_CANDIDATES
+#define COHERENT_APRIORI_CANDIDATES 8  // ... trying at most this many aircraft
+#endif
 #ifndef COHERENT_REPAIR_MAG_GATE
 #define COHERENT_REPAIR_MAG_GATE 128u // minimum magnitude quality to repair from the magnitude bits
 #endif
@@ -61,9 +73,19 @@ int coherentDecode(const int16_t *iq, unsigned iq_len, int pos, uint8_t *out, ui
 // each bit's reliability (coherent |y_a - y_b|, or the magnitude chips' log power
 // contrast). Flips up to COHERENT_REPAIR_FLIPS of the COHERENT_REPAIR_BITS least
 // reliable bits and keeps the cheapest combination (sum of the flipped
-// reliabilities) that makes a DF17/18 with a correct CRC. Returns the number of
-// bits flipped, with msg repaired, or 0.
+// reliabilities) that makes a DF17/18 with a correct CRC, if confident: its cost at
+// most COHERENT_REPAIR_MAX_COST average bits, and the next-best valid combination at
+// least COHERENT_REPAIR_MIN_MARGIN costlier. Returns the number of bits flipped, with
+// msg repaired, or 0.
 int softRepair(uint8_t *msg, const uint16_t *rel);
+
+// Soft-decision repair assuming the frame is a DF17 from a tracked aircraft: for the
+// reliable aircraft whose DF17 DF and address bits differ from the frame's only in
+// bits among its COHERENT_APRIORI_WEAK weakest, those bits are set to the aircraft's,
+// then up to COHERENT_REPAIR_FLIPS of the COHERENT_REPAIR_BITS weakest other bits
+// are flipped. The cheapest valid result over all of them, if confident. Returns the
+// number of bits changed, with msg repaired, or 0.
+int aprioriRepair(uint8_t *msg, const uint16_t *rel);
 
 // Complex filter outputs (int32 I, Q, before rounding) at the chip centres
 // pos + 6k, k = 0 .. nchips-1: 16 preamble chips then 2 per data bit.

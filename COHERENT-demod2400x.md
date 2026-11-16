@@ -212,6 +212,26 @@ frames the coherent repair couldn't fix. It runs only on frames of magnitude
 quality 128 or more (`COHERENT_REPAIR_MAG_GATE`): below that most candidates are
 noise, and quality 96 gave only 0.1% more DF17 for over twice the CPU.
 
+Last, if neither repair works, `aprioriRepair()` assumes the frame is a DF17
+from an aircraft being tracked. Its DF and 24 address bits are then known: for
+each reliable tracked aircraft recently heard in a CRC-checked message whose
+DF17 differs from the frame's DF and address bits only in bits among the
+frame's 24 weakest (`COHERENT_APRIORI_WEAK`), those bits are set to the
+aircraft's and the rest is repaired as above (up to 4 of the 12 weakest other
+bits). The rule that changed bits must be weak is what stops a frame from an
+untracked aircraft being taken for a tracked one a few address bits away: such
+a frame's address bits were received right, so they are rarely weak. With the
+rule, 150 random decoy aircraft and every tracked aircraft replaced by a
+neighbour 2 or 3 address bits away gave no match at all on the 60 s capture;
+without it they gave 9 to 11.
+
+Every repair must also be confident: its cost (the sum of the changed bits'
+reliabilities) at most 3 average bits (`COHERENT_REPAIR_MAX_COST`), and the
+next-best valid repair (another set of flips, or another aircraft) at least 1
+average bit costlier (`COHERENT_REPAIR_MIN_MARGIN`). On the 60 s capture every
+real repair costs under 3 and none comes within 2 of a rival; the limits are a
+safety net, and turn down 3 of the coherent repairs.
+
 A repaired frame is accepted only from an aircraft already known (DF17/18
 only: the other formats have no spare check), and is marked not reliable,
 like a message whose bit errors `--fix` repaired.
@@ -287,10 +307,18 @@ Soft-decision repair (step 8), with `--fix` (the packaged configuration);
 | Global CPR positions (`--throttle`) | 4,692 → 5,064 (+7.9%) | 4,763 → 5,162 (+8.4%) | 562 → 726 (+29%) |
 | Aircraft with a position at the end | 110 → 111 (of 141) | | 18 → 21 (of 26) |
 
+The tracked-aircraft repair, on top of those (with `--throttle`): RTL-SDR a
+DF17 14,857 → 15,066 (+1.4%), global CPR positions 5,064 → 5,143 (+1.6%);
+SDRplay DF17 2,107 → 2,302 (+9.3%), positions 726 → 800 (+10%). On the
+synthetic frames it raises those decoded at 3.9 dB from 1,244 to 1,472 (+18%)
+and at 3.0 dB from 505 to 765 (+51%), all with the right contents: its gain is
+on the weakest signals. It costs about 8% more demodulation CPU on the Pi 5 and
+4% on the Pi 3B, mostly in finding each candidate frame's weakest bits.
+
 No global CPR attempt had bad data or failed the speed check, with or without
 the repair (runs with `--throttle`; without it the tracker's timing follows the
 file reading and these counts mean little). Demodulation CPU (user time, best
-of three): Pi 5 +5.8%, Pi 3B +2.3% (20 s capture on one core). On synthetic
+of three): Pi 5 +5.5%, Pi 3B +4.0% (20 s capture on one core). On synthetic
 frames with a carrier offset, the repair takes the frames decoded at 3.9 dB
 per sample from 1,055 to 1,244 of 3,000 (+18%), and at 3.0 dB from 382 to 505
 (+32%); every one with the right contents.
@@ -300,7 +328,7 @@ per sample from 1,055 to 1,244 of 3,000 (+18%), and at 3.0 dB from 382 to 505
 `stats.json` (in the `--write-json` directory) has the coherent counts in
 each period's `local` section, and `--stats` prints them too:
 
-    "coherent":{"tried":596098,"coherent":151907,"rescued":12712,"repaired":902,"repaired_mag":157}
+    "coherent":{"tried":588294,"coherent":147587,"rescued":12709,"repaired":899,"repaired_mag":157,"repaired_known":213}
 
 * `tried`: frames that failed the CRC and passed the quality gate;
 * `coherent`: of those, frames whose carrier passed the rho2 gate;
@@ -308,7 +336,9 @@ each period's `local` section, and `--stats` prints them too:
   also counted in `accepted`;
 * `repaired`: of the rescued, those that needed the soft-decision repair;
 * `repaired_mag`: frames repaired from the magnitude bits (not in `rescued`;
-  also counted in `accepted`).
+  also counted in `accepted`);
+* `repaired_known`: frames repaired assuming a tracked aircraft (not in
+  `rescued`; also counted in `accepted`).
 
 ## What the carriers show
 
@@ -456,6 +486,10 @@ not `CFLAGS`, which would replace `-O3`).
 | `COHERENT_REPAIR_BITS` | 12 | Soft-decision repair: the least reliable bits it may flip (at most 16) |
 | `COHERENT_REPAIR_FLIPS` | 4 | ... and at most this many of them at once (at most 4) |
 | `COHERENT_REPAIR_MAG_GATE` | 128 | Minimum magnitude quality to repair from the magnitude bits |
+| `COHERENT_REPAIR_MAX_COST` | 3 | Confidence: at most this many average bits' worth changed |
+| `COHERENT_REPAIR_MIN_MARGIN` | 1 | ... and the next-best valid repair at least this much costlier |
+| `COHERENT_APRIORI_WEAK` | 24 | Tracked-aircraft repair: the DF and address bits it changes must be among the frame's this many weakest |
+| `COHERENT_APRIORI_CANDIDATES` | 8 | ... trying at most this many aircraft |
 | `COHERENT_STATS` | 0 | 1: print the statistics above at exit |
 | `COHERENT_DIAG` | 0 | 1: also decode frames that already passed, and count bit errors of both decoders |
 | `COHERENT_DUMP` | 0 | 1 (with `COHERENT_DIAG`): one line per frame with frequency and errors |

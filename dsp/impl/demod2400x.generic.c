@@ -253,7 +253,7 @@ static inline coh_c16 coh_rot(coh_c16 x, coh_c16 p)
 // carrier frequency, channel h and rho2; if rho2 >= thres, slice its 56 bits into
 // out[first/8 ..] and return 1 with the quality in *q
 static int coh_half_generic(const int16_t *iq, int pos, int first, unsigned thres,
-                            uint8_t *out, uint32_t *rho2_out, uint32_t *f_out, uint32_t *k_out, uint32_t *q)
+                            uint8_t *out, uint16_t *rel, uint32_t *rho2_out, uint32_t *f_out, uint32_t *k_out, uint32_t *q)
 {
     coh_c16 a[COH_HALF], b[COH_HALF], P[COH_HALF], Q[COH_HALF];
 
@@ -382,6 +382,7 @@ static int coh_half_generic(const int16_t *iq, int pos, int first, unsigned thre
         const int16_t yb = (int16_t) (coh_mulq15(rbb.re, gre) + coh_mulq15(rbb.im, gim));
         if (ya > yb)
             out[(first + i) >> 3] |= (uint8_t) (0x80 >> (i & 7));
+        rel[first + i] = (uint16_t) coh_abs(ya - yb);
         qual += coh_abs(ya - yb);
         pw += coh_abs(ya) + coh_abs(yb);
     }
@@ -390,15 +391,16 @@ static int coh_half_generic(const int16_t *iq, int pos, int first, unsigned thre
 }
 
 void STARCH_IMPL(coherent_decode, generic) (const int16_t * restrict iq, int pos, unsigned thres,
-                                            uint8_t * restrict out, uint32_t * restrict info)
+                                            uint8_t * restrict out, uint32_t * restrict info, uint16_t * restrict rel)
 {
     memset(out, 0, 14);
     memset(info, 0, COH_INFO_N * sizeof(*info));
+    memset(rel, 0, COH_BITS * sizeof(*rel));
 
-    if (!coh_half_generic(iq, pos, 0, thres, out, &info[COH_INFO_RHO2], &info[COH_INFO_FINE], &info[COH_INFO_WIDE], &info[COH_INFO_Q1]))
+    if (!coh_half_generic(iq, pos, 0, thres, out, rel, &info[COH_INFO_RHO2], &info[COH_INFO_FINE], &info[COH_INFO_WIDE], &info[COH_INFO_Q1]))
         return;
     info[COH_INFO_DECODED] = 1;
     // The second half whatever the DF says (as the magnitude decoder): scoring can
     // correct the DF bits, and every short DF is one bit from a long one
-    coh_half_generic(iq, pos, COH_HALF, 0, out, &info[COH_INFO_RHO2B], &info[COH_INFO_FINE2], &info[COH_INFO_WIDE2], &info[COH_INFO_Q2]);
+    coh_half_generic(iq, pos, COH_HALF, 0, out, rel, &info[COH_INFO_RHO2B], &info[COH_INFO_FINE2], &info[COH_INFO_WIDE2], &info[COH_INFO_Q2]);
 }

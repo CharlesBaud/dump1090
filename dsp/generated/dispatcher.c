@@ -33,13 +33,13 @@ starch_coherent_decode_regentry * starch_coherent_decode_select() {
     return NULL;
 }
 
-static void starch_coherent_decode_dispatch ( const int16_t * arg0, int arg1, unsigned arg2, uint8_t * arg3, uint32_t * arg4 ) {
+static void starch_coherent_decode_dispatch ( const int16_t * arg0, int arg1, unsigned arg2, uint8_t * arg3, uint32_t * arg4, uint16_t * arg5 ) {
     starch_coherent_decode_regentry *entry = starch_coherent_decode_select();
     if (!entry)
         abort();
 
     starch_coherent_decode = entry->callable;
-    starch_coherent_decode ( arg0, arg1, arg2, arg3, arg4 );
+    starch_coherent_decode ( arg0, arg1, arg2, arg3, arg4, arg5 );
 }
 
 starch_coherent_decode_ptr starch_coherent_decode = starch_coherent_decode_dispatch;
@@ -558,8 +558,8 @@ starch_locate_preamble_regentry starch_locate_preamble_registry[] = {
   
 #ifdef STARCH_MIX_X86
     { 0, "avx2_x86_avx2", "x86_avx2", starch_locate_preamble_avx2_x86_avx2, cpu_supports_avx2 },
-    { 1, "generic_generic", "generic", starch_locate_preamble_generic_generic, NULL },
-    { 2, "generic_x86_avx2", "x86_avx2", starch_locate_preamble_generic_x86_avx2, cpu_supports_avx2 },
+    { 1, "generic_x86_avx2", "x86_avx2", starch_locate_preamble_generic_x86_avx2, cpu_supports_avx2 },
+    { 2, "generic_generic", "generic", starch_locate_preamble_generic_generic, NULL },
 #endif /* STARCH_MIX_X86 */
     { 0, NULL, NULL, NULL, NULL }
 };

@@ -743,7 +743,7 @@ void coh_wide_regroup_neon(const int16_t *wr, const int16_t *wi, int k, int16_t 
     } while (0)
 
 static int coh_half_neon(const int16_t *iq, int pos, int first, unsigned thres,
-                         const int16x8_t (*ci)[2], uint8_t *out, uint32_t *rho2_out, uint32_t *f_out, uint32_t *k_out, uint32_t *q)
+                         const int16x8_t (*ci)[2], uint8_t *out, uint16_t *rel, uint32_t *rho2_out, uint32_t *f_out, uint32_t *k_out, uint32_t *q)
 {
     int32_t c32[4 * COH_HALF] __attribute__((aligned(16)));
     int16_t ar[COH_HALF], ai[COH_HALF], br[COH_HALF], bi[COH_HALF];
@@ -898,7 +898,9 @@ static int coh_half_neon(const int16_t *iq, int pos, int first, unsigned thres,
         const int16x8_t yb = vaddq_s16(vqrdmulhq_s16(xbr, gr), vqrdmulhq_s16(xbi, gi));
         out[(first + i) >> 3] = coh_bits8_neon(vcgtq_s16(ya, yb));
         // |ya - yb| and |ya| + |yb| are below 2^15, so as uint16 they widen-accumulate safely
-        qual = vpadalq_u16(qual, vreinterpretq_u16_s16(vabdq_s16(ya, yb)));
+        const uint16x8_t d = vreinterpretq_u16_s16(vabdq_s16(ya, yb));
+        vst1q_u16(rel + first + i, d);
+        qual = vpadalq_u16(qual, d);
         pw = vpadalq_u16(pw, vreinterpretq_u16_s16(vaddq_s16(vabsq_s16(ya), vabsq_s16(yb))));
     }
     *q = coh_quality(coh_hsum_u32_neon(qual), coh_hsum_u32_neon(pw));
@@ -906,7 +908,7 @@ static int coh_half_neon(const int16_t *iq, int pos, int first, unsigned thres,
 }
 
 void STARCH_IMPL(coherent_decode, neon) (const int16_t * restrict iq, int pos, unsigned thres,
-                                         uint8_t * restrict out, uint32_t * restrict info)
+                                         uint8_t * restrict out, uint32_t * restrict info, uint16_t * restrict rel)
 {
     int16x8_t ci[5][2];
     for (int c = 0; c < 5; c++) {
@@ -918,13 +920,14 @@ void STARCH_IMPL(coherent_decode, neon) (const int16_t * restrict iq, int pos, u
 
     memset(out, 0, 14);
     memset(info, 0, COH_INFO_N * sizeof(*info));
+    memset(rel, 0, COH_BITS * sizeof(*rel));
 
-    if (!coh_half_neon(iq, pos, 0, thres, (const int16x8_t (*)[2]) ci, out,
+    if (!coh_half_neon(iq, pos, 0, thres, (const int16x8_t (*)[2]) ci, out, rel,
                        &info[COH_INFO_RHO2], &info[COH_INFO_FINE], &info[COH_INFO_WIDE], &info[COH_INFO_Q1]))
         return;
     info[COH_INFO_DECODED] = 1;
     // The second half whatever the DF says (as the magnitude decoder): scoring can
     // correct the DF bits, and every short DF is one bit from a long one
-    coh_half_neon(iq, pos, COH_HALF, 0, (const int16x8_t (*)[2]) ci, out,
+    coh_half_neon(iq, pos, COH_HALF, 0, (const int16x8_t (*)[2]) ci, out, rel,
                   &info[COH_INFO_RHO2B], &info[COH_INFO_FINE2], &info[COH_INFO_WIDE2], &info[COH_INFO_Q2]);
 }

@@ -357,6 +357,7 @@ struct _Modes {                             // Internal state
     int   mode_ac;                   // Enable decoding of SSR Modes A & C
     int   demod_2400x;               // DEMOD_2400X build: use the DEMOD_2400X demodulator (else the stock one)
     int   coherent;                  // DEMOD_2400X_COHERENT build: run the coherent second pass
+    int   coherent_repair;           // DEMOD_2400X_COHERENT build: soft-decision repair of coherent DF17/18
     int   mode_ac_auto;              // allow toggling of A/C by Beast commands
     int   net;                       // Enable networking
     int   net_only;                  // Enable just networking

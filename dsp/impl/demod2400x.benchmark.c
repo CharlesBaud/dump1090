@@ -489,20 +489,22 @@ void STARCH_BENCHMARK(coherent_decode) (void)
     int16_t *in_full = demod2400x_make_iq_full(len);
     uint8_t out[14];
     uint32_t info[COH_INFO_N];
+    uint16_t rel[COH_BITS];
 
     if (in && in_full) {
         memset(out, DEMOD2400X_BENCH_POISON, sizeof(out));
         memset(info, DEMOD2400X_BENCH_POISON, sizeof(info));
-        STARCH_BENCHMARK_RUN( coherent_decode, in, 1001, 0, out, info );
-        STARCH_BENCHMARK_RUN( coherent_decode, in_full, 777, 0, out, info );
-        STARCH_BENCHMARK_RUN( coherent_decode, in, 50003, 614, out, info );
+        memset(rel, DEMOD2400X_BENCH_POISON, sizeof(rel));
+        STARCH_BENCHMARK_RUN( coherent_decode, in, 1001, 0, out, info, rel );
+        STARCH_BENCHMARK_RUN( coherent_decode, in_full, 777, 0, out, info, rel );
+        STARCH_BENCHMARK_RUN( coherent_decode, in, 50003, 614, out, info, rel );
     }
 
     // Frames across the +-250 kHz search, at their own positions
     int16_t *fr = demod2400x_make_coh_frames(len);
     if (fr) {
         for (int n = 0; n < COH_BENCH_FRAMES; ++n)
-            STARCH_BENCHMARK_RUN( coherent_decode, fr, coh_frame_pos(n), 614, out, info );
+            STARCH_BENCHMARK_RUN( coherent_decode, fr, coh_frame_pos(n), 614, out, info, rel );
     }
     free(fr);
 
@@ -510,14 +512,16 @@ void STARCH_BENCHMARK(coherent_decode) (void)
     free(in_full);
 }
 
-bool STARCH_BENCHMARK_VERIFY(coherent_decode) (const int16_t *iq, int pos, unsigned thres, uint8_t *out, uint32_t *info)
+bool STARCH_BENCHMARK_VERIFY(coherent_decode) (const int16_t *iq, int pos, unsigned thres, uint8_t *out, uint32_t *info, uint16_t *rel)
 {
     uint8_t ref[14];
     uint32_t ref_info[COH_INFO_N];
+    uint16_t ref_rel[COH_BITS];
 
     memset(ref, DEMOD2400X_BENCH_POISON, sizeof(ref));
     memset(ref_info, DEMOD2400X_BENCH_POISON, sizeof(ref_info));
-    starch_coherent_decode_generic_generic(iq, pos, thres, ref, ref_info);
+    memset(ref_rel, DEMOD2400X_BENCH_POISON, sizeof(ref_rel));
+    starch_coherent_decode_generic_generic(iq, pos, thres, ref, ref_info, ref_rel);
 
     bool okay = true;
     for (int k = 0; k < 14; ++k) {
@@ -533,8 +537,15 @@ bool STARCH_BENCHMARK_VERIFY(coherent_decode) (const int16_t *iq, int pos, unsig
             okay = false;
         }
     }
+    for (int k = 0; okay && k < COH_BITS; ++k) {
+        if (rel[k] != ref_rel[k]) {
+            fprintf(stderr, "verification failed: rel[%d]=%u, expected %u\n", k, rel[k], ref_rel[k]);
+            okay = false;
+        }
+    }
 
     memset(out, DEMOD2400X_BENCH_POISON, 14);
     memset(info, DEMOD2400X_BENCH_POISON, COH_INFO_N * sizeof(*info));
+    memset(rel, DEMOD2400X_BENCH_POISON, COH_BITS * sizeof(*rel));
     return okay;
 }

@@ -2,7 +2,7 @@
 // (dsp/impl/demod2400x.*.c). Every implementation uses these for the scalar steps,
 // so all of them give the same bits.
 //
-// coherent_decode(iq, pos, thres, out, info) decodes the frame whose preamble
+// coherent_decode(iq, pos, thres, out, info, rel) decodes the frame whose preamble
 // starts at 12 MHz position pos, from 12-bit I/Q (DC removed), coherently:
 //
 // Each 56-bit half is decoded on its own, with nothing shared: the first always, the
@@ -39,14 +39,14 @@
 //    rho2 = coh_rho2(h, e2) in 1/1024. The first half stops here below 'thres' (the
 //    whole frame is then not decoded); the second half is always sliced.
 // 6. Slice the 56 bits: g = h scaled below 2^15; y = mulq15(re, g.re) + mulq15(im, g.im)
-//    for rot(x_a, P[i]) and rot(x_b, Q[i]); bit = 1 if y_a > y_b. Quality 256 sum|y_a - y_b| /
-//    (sum (|y_a| + |y_b|) + 1).
+//    for rot(x_a, P[i]) and rot(x_b, Q[i]); bit = 1 if y_a > y_b, reliability |y_a - y_b|.
+//    Quality 256 sum|y_a - y_b| / (sum (|y_a| + |y_b|) + 1).
 //
 // rot(x, p) = (mulq15(x.re, p.re) - mulq15(x.im, p.im), mulq15(x.re, p.im) + mulq15(x.im, p.re))
 // with mulq15(a, b) = (a*b + 2^14) >> 15 (NEON vqrdmulh, AVX2/SSSE3 mulhrs).
 //
 // out[14] gets the bits (zero where not decoded); info[COH_INFO_N] the results (zero
-// for a half not done).
+// for a half not done); rel[112] the reliabilities (zero where not decoded).
 
 #ifndef DEMOD2400X_COHERENT_H
 #define DEMOD2400X_COHERENT_H

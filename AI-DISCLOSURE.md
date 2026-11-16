@@ -47,6 +47,13 @@ never with a file, and convert the I/Q buffer to magnitudes only once, in a
 single array whose pointer is reset before each buffer. Claude Code wrote the
 code and ran the tests.
 
+The soft-decision repair of coherent DF17/18 frames (`--no-soft-fix`) came
+from my question whether the slicer could make use of the noise and signal
+power. Claude Code proposed flipping the least reliable bits under the CRC,
+measured it in Python first, wrote the code to my choices (the simpler
+scaling, on by default with a flag to disable, no static state) and ran the
+tests on the Pi 3B, Pi 4, Pi 5 and an x86 PC.
+
 ## How it was checked
 
 * Every SIMD kernel is checked bit-for-bit against the generic version by

@@ -73,12 +73,12 @@ static bool starch_benchmark_flavor_in_list(const char *flavor, const starch_ben
 
 /* prototypes for benchmark helpers provided by user code */
 void starch_coherent_decode_benchmark (void);
-bool starch_coherent_decode_benchmark_verify ( const int16_t * arg0, int arg1, unsigned arg2, uint8_t * arg3, uint32_t * arg4 );
+bool starch_coherent_decode_benchmark_verify ( const int16_t * arg0, int arg1, unsigned arg2, uint8_t * arg3, uint32_t * arg4, uint16_t * arg5 );
 
 /* prototype the benchmarking function so that we can build with -Wmissing-declarations */
 void starch_coherent_decode_benchmark(void);
 
-static void starch_benchmark_one_coherent_decode( starch_coherent_decode_regentry * _entry, const int16_t * arg0, int arg1, unsigned arg2, uint8_t * arg3, uint32_t * arg4 )
+static void starch_benchmark_one_coherent_decode( starch_coherent_decode_regentry * _entry, const int16_t * arg0, int arg1, unsigned arg2, uint8_t * arg3, uint32_t * arg4, uint16_t * arg5 )
 {
     fprintf(stderr, "  %-40s  ", _entry->name);
 
@@ -105,10 +105,10 @@ static void starch_benchmark_one_coherent_decode( starch_coherent_decode_regentr
 
     /* initial warmup */
     for (unsigned _loop = 0; _loop < starch_benchmark_warmup_loops; ++_loop)
-        _entry->callable ( arg0, arg1, arg2, arg3, arg4 );
+        _entry->callable ( arg0, arg1, arg2, arg3, arg4, arg5 );
 
     /* verify correctness of the output */
-    if (! starch_coherent_decode_benchmark_verify ( arg0, arg1, arg2, arg3, arg4 )) {
+    if (! starch_coherent_decode_benchmark_verify ( arg0, arg1, arg2, arg3, arg4, arg5 )) {
         fprintf(stderr, "skipped (verification failed)\n");
         starch_benchmark_validation_failed = true;
         return;
@@ -126,7 +126,7 @@ static void starch_benchmark_one_coherent_decode( starch_coherent_decode_regentr
         _loops *= 2;
         starch_benchmark_get_time(&_start);
         for (uint64_t _loop = 0; _loop < _loops; ++_loop)
-            _entry->callable ( arg0, arg1, arg2, arg3, arg4 );
+            _entry->callable ( arg0, arg1, arg2, arg3, arg4, arg5 );
         starch_benchmark_get_time(&_end);
         _elapsed = starch_benchmark_elapsed(&_start, &_end);
     }
@@ -140,7 +140,7 @@ static void starch_benchmark_one_coherent_decode( starch_coherent_decode_regentr
     for (unsigned _iter = 0; _iter < starch_benchmark_iterations; ++_iter) {
         starch_benchmark_get_time(&_start);
         for (uint64_t _loop = 0; _loop < _loops; ++_loop)
-            _entry->callable ( arg0, arg1, arg2, arg3, arg4 );
+            _entry->callable ( arg0, arg1, arg2, arg3, arg4, arg5 );
         starch_benchmark_get_time(&_end);
         uint64_t _elapsed_one = starch_benchmark_elapsed(&_start, &_end);
         if (_elapsed_one < _elapsed_min)
@@ -177,10 +177,10 @@ static void starch_benchmark_one_coherent_decode( starch_coherent_decode_regentr
     ++starch_benchmark_result_count;
 }
 
-static void starch_benchmark_run_coherent_decode( const int16_t * arg0, int arg1, unsigned arg2, uint8_t * arg3, uint32_t * arg4 )
+static void starch_benchmark_run_coherent_decode( const int16_t * arg0, int arg1, unsigned arg2, uint8_t * arg3, uint32_t * arg4, uint16_t * arg5 )
 {
     for (starch_coherent_decode_regentry *_entry = starch_coherent_decode_registry; _entry->name; ++_entry) {
-        starch_benchmark_one_coherent_decode( _entry, arg0, arg1, arg2, arg3, arg4 );
+        starch_benchmark_one_coherent_decode( _entry, arg0, arg1, arg2, arg3, arg4, arg5 );
     }
 }
 

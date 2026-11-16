@@ -595,7 +595,7 @@ void coh_wide_regroup_sse(const int16_t *wr, const int16_t *wi, int k, int16_t *
 }
 
 static int coh_half_avx2(const int16_t *iq, int pos, int first, unsigned thres, const __m256i *ci, const __m256i *cq,
-                         uint8_t *out, uint32_t *rho2_out, uint32_t *f_out, uint32_t *k_out, uint32_t *q)
+                         uint8_t *out, uint16_t *rel, uint32_t *rho2_out, uint32_t *f_out, uint32_t *k_out, uint32_t *q)
 {
     int32_t a32r[COH_HALF], a32i[COH_HALF], b32r[COH_HALF], b32i[COH_HALF];
     int16_t ar[COH_HALF], ai[COH_HALF], br[COH_HALF], bi[COH_HALF];
@@ -762,7 +762,9 @@ static int coh_half_avx2(const int16_t *iq, int pos, int first, unsigned thres, 
         const __m128i yb = _mm_add_epi16(_mm_mulhrs_epi16(xbr, gr), _mm_mulhrs_epi16(xbi, gi));
         const __m128i gt = _mm_shuffle_epi8(_mm_cmpgt_epi16(ya, yb), reverse);   // lane 0 -> bit 7
         out[(first + i) >> 3] = (uint8_t) _mm_movemask_epi8(_mm_packs_epi16(gt, _mm_setzero_si128()));
-        qual = _mm_add_epi32(qual, _mm_madd_epi16(_mm_abs_epi16(_mm_sub_epi16(ya, yb)), ones));
+        const __m128i d = _mm_abs_epi16(_mm_sub_epi16(ya, yb));
+        _mm_storeu_si128((__m128i *) (rel + first + i), d);
+        qual = _mm_add_epi32(qual, _mm_madd_epi16(d, ones));
         pw = _mm_add_epi32(pw, _mm_madd_epi16(_mm_add_epi16(_mm_abs_epi16(ya), _mm_abs_epi16(yb)), ones));
     }
 #undef COH_LD
@@ -771,7 +773,7 @@ static int coh_half_avx2(const int16_t *iq, int pos, int first, unsigned thres, 
 }
 
 void STARCH_IMPL(coherent_decode, avx2) (const int16_t * restrict iq, int pos, unsigned thres,
-                                         uint8_t * restrict out, uint32_t * restrict info)
+                                         uint8_t * restrict out, uint32_t * restrict info, uint16_t * restrict rel)
 {
     __m256i ci[5], cq[5];
     for (int c = 0; c < 5; c++) {
@@ -786,11 +788,12 @@ void STARCH_IMPL(coherent_decode, avx2) (const int16_t * restrict iq, int pos, u
 
     memset(out, 0, 14);
     memset(info, 0, COH_INFO_N * sizeof(*info));
+    memset(rel, 0, COH_BITS * sizeof(*rel));
 
-    if (!coh_half_avx2(iq, pos, 0, thres, ci, cq, out, &info[COH_INFO_RHO2], &info[COH_INFO_FINE], &info[COH_INFO_WIDE], &info[COH_INFO_Q1]))
+    if (!coh_half_avx2(iq, pos, 0, thres, ci, cq, out, rel, &info[COH_INFO_RHO2], &info[COH_INFO_FINE], &info[COH_INFO_WIDE], &info[COH_INFO_Q1]))
         return;
     info[COH_INFO_DECODED] = 1;
     // The second half whatever the DF says (as the magnitude decoder): scoring can
     // correct the DF bits, and every short DF is one bit from a long one
-    coh_half_avx2(iq, pos, COH_HALF, 0, ci, cq, out, &info[COH_INFO_RHO2B], &info[COH_INFO_FINE2], &info[COH_INFO_WIDE2], &info[COH_INFO_Q2]);
+    coh_half_avx2(iq, pos, COH_HALF, 0, ci, cq, out, rel, &info[COH_INFO_RHO2B], &info[COH_INFO_FINE2], &info[COH_INFO_WIDE2], &info[COH_INFO_Q2]);
 }

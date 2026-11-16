@@ -9,7 +9,8 @@ RTL-SDR capture it adds about 14% more messages (84,545 → 96,370) for about
 Branch: `demod-2400x-dev` (developed on `demod-2400x-coherent`). Built in by
 `-DDEMOD_2400X_COHERENT` in the Makefile and on by default; `--no-coherent`
 switches it off when running, and the decoder is then byte-for-byte plain
-DEMOD_2400X.
+DEMOD_2400X. Frames whose coherent bits still fail the CRC get a soft-decision
+repair (step 8), also on by default; `--no-soft-fix` switches that off alone.
 
 ## Why it can help
 
@@ -143,7 +144,8 @@ For each of the 56 bits of the half:
 * rotates `a` by `P[i]` and `b` by `Q[i]`;
 * projects each onto `h` (the real part of `chip × conj(h)`), giving `y_a`
   and `y_b`: how much of each chip lines up with the carrier;
-* bit = 1 if `y_a > y_b`.
+* bit = 1 if `y_a > y_b`;
+* keeps `|y_a − y_b|` as the bit's reliability, for the repair (step 8).
 
 It also computes a quality for the half, like the magnitude one:
 `256 · Σ|y_a − y_b| / Σ(|y_a| + |y_b|)`. The second-half quality is used,
@@ -173,6 +175,43 @@ channel. It is always sliced; there is no gate on it.
 fails the CRC, it is tried again with the magnitude decoder's second half,
 then with the magnitude first half. On the 60 s capture that rescues 75 more
 frames (+0.8%) for about 1% more coherent-pass time.
+
+### 8. Soft-decision repair
+
+With the carrier known, `y_a > y_b` is already the best decision for each bit
+on its own: the signal and noise power cancel out of it. What they add is how
+sure each decision is. A bit with a small `|y_a − y_b|` is nearly a coin toss,
+and when the frame fails the CRC its errors are mostly there: on frames whose
+bits are known, 77% of the wrong coherent bits are among the 5 least reliable
+of the 112.
+
+So if the coherent bits still fail the CRC, `coherentRepair()` tries flipping
+the least reliable ones:
+
+* each bit's reliability is `|y_a − y_b|` over its half's sum, since each half
+  has its own channel scaling (a full log-likelihood, A·|y_a − y_b|/σ², gave
+  1.3% more repairs and no fewer wrong ones);
+* it takes the 10 least reliable bits (`COHERENT_REPAIR_BITS`) and tries every
+  combination of 1 to 3 of them (`COHERENT_REPAIR_FLIPS`), 175 in all. The CRC
+  syndrome is linear, so a combination is the XOR of its bits' syndromes;
+* the cheapest combination (smallest sum of flipped reliabilities) that gives
+  a DF17/18 with a correct CRC wins;
+* first, a quick test drops frames that can't become DF17/18: the DF bits that
+  would have to change must all be among the 10 least reliable (three quarters
+  of the frames stop here).
+
+The repaired frame is accepted only from an aircraft already known (DF17/18
+only: the other formats have no spare check), and is marked not reliable,
+like a message whose bit errors `--fix` repaired.
+
+* **Why not more:** only the CRC checks the flipped bits. For a repair to come
+  out wrong, the real errors and the flips together would have to make another
+  valid message, about 6 bits. In about 106,000 trials (known frames with 1–8
+  extra errors, on their weakest bits or anywhere) none did: up to 3 errors on
+  weak bits are all repaired correctly, more are left alone. By chance, about
+  35,000 frames a minute reach the search on the 60 s capture, so at most
+  0.36 CRC matches a minute before the known-aircraft test, against about 730
+  good repairs; `--fix` tests 112 syndromes per failed DF17, the same order.
 
 ## Results
 
@@ -222,17 +261,32 @@ receivers.
 Most attempts are not coherent: they are noise, overlapping frames, or
 aircraft whose transmitters aren't phase-stable.
 
+Soft-decision repair (step 8), with `--fix` as the packaged configuration:
+
+| | RTL-SDR a | RTL-SDR b | SDRplay 5 MHz |
+|---|---|---|---|
+| Repaired frames | 729 | 816 | 313 |
+| Messages | 96,370 → 97,073 (+0.7%) | 111,609 → 112,393 (+0.7%) | 12,220 → 12,521 (+2.5%) |
+| DF17 (ADS-B) | 13,823 → 14,534 (+5.1%) | 14,365 → 15,168 (+5.6%) | 1,662 → 1,963 (+18%) |
+
+On capture a, airborne positions went 4,982 → 5,235 (+5.1%), with 2 more
+global CPR attempts failing the speed check (86 → 88). Without `--fix`, the
+repair also takes the single-bit errors and repairs 1,885 frames. Demodulation
+CPU (user time, best of several runs) goes up by 1.7% on the Pi 5, 2% on the
+Pi 4 and 2% on the Pi 3B.
+
 ### Live counts
 
 `stats.json` (in the `--write-json` directory) has the coherent counts in
 each period's `local` section, and `--stats` prints them too:
 
-    "coherent":{"tried":596098,"coherent":151907,"rescued":11820}
+    "coherent":{"tried":596098,"coherent":151907,"rescued":12540,"repaired":729}
 
 * `tried`: frames that failed the CRC and passed the quality gate;
 * `coherent`: of those, frames whose carrier passed the rho2 gate;
 * `rescued`: of those, frames whose coherent bits passed the CRC. They are
-  also counted in `accepted`.
+  also counted in `accepted`;
+* `repaired`: of the rescued, those that needed the soft-decision repair.
 
 ## What the carriers show
 
@@ -359,7 +413,7 @@ implementation against generic.
 | File | What it holds |
 |---|---|
 | `demod_2400x.c` | The hook in `emitFrame()`, statistics, the diagnostic and the sample dump (all inside `#ifdef DEMOD_2400X_COHERENT`) |
-| `demod_2400x_coherent.c/.h` | `coherentDecode()`: bounds check, calls the kernel; the settings |
+| `demod_2400x_coherent.c/.h` | `coherentDecode()`: bounds check, calls the kernel; `coherentRepair()`: the soft-decision repair; the settings |
 | `dsp/helpers/demod2400x_coherent.h` | The method, step by step, and the scalar helpers shared by all implementations |
 | `dsp/helpers/demod2400x_coh_tables.h` | Phasor tables (generated) |
 | `dsp/impl/demod2400x.generic.c` | Reference implementation: read this one first |
@@ -377,6 +431,8 @@ not `CFLAGS`, which would replace `-O3`).
 | `COHERENT_GATE` | 96 | Minimum magnitude quality (first 56 bits, at most 176) to try |
 | `COHERENT_RHO2` | 614 | Minimum carrier coherence of the first half, in 1/1024 (0.6) |
 | `COHERENT_MIX` | 0 | 1: if the coherent frame fails, try it with each half from the magnitude bits |
+| `COHERENT_REPAIR_BITS` | 10 | Soft-decision repair: the least reliable bits it may flip |
+| `COHERENT_REPAIR_FLIPS` | 3 | ... and at most this many of them at once |
 | `COHERENT_STATS` | 0 | 1: print the statistics above at exit |
 | `COHERENT_DIAG` | 0 | 1: also decode frames that already passed, and count bit errors of both decoders |
 | `COHERENT_DUMP` | 0 | 1 (with `COHERENT_DIAG`): one line per frame with frequency and errors |

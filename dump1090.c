@@ -118,6 +118,7 @@ static void modesInitConfig(void) {
 #endif
 #ifdef DEMOD_2400X_COHERENT
     Modes.coherent                = 1;
+    Modes.coherent_repair         = 1;
 #endif
     Modes.interactive_display_ttl = MODES_INTERACTIVE_DISPLAY_TTL;
     // Default TTL is 60s; width must match so the Ti column pads correctly for values >= 10
@@ -363,6 +364,7 @@ static void showHelp(void)
 #endif
 #ifdef DEMOD_2400X_COHERENT
 "--no-coherent            Disable the DEMOD_2400X coherent second pass\n"
+"--no-soft-fix            Disable soft-decision repair of DF17/18 in the coherent pass\n"
 #endif
 "--lat <latitude>         Reference/receiver latitude for surface positions\n"
 "--lon <longitude>        Reference/receiver longitude for surface positions\n"
@@ -688,6 +690,8 @@ int main(int argc, char **argv) {
 #ifdef DEMOD_2400X_COHERENT
         } else if (!strcmp(argv[j],"--no-coherent")) {
             Modes.coherent = 0;
+        } else if (!strcmp(argv[j],"--no-soft-fix")) {
+            Modes.coherent_repair = 0;
 #endif
         } else if (!strcmp(argv[j],"--no-crc-check")) {
             fprintf(stderr, "warning: --no-crc-check no longer supported, option ignored (please raise an issue on github if you have a usecase that needs this)\n");

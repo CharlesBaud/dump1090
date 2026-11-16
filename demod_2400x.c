@@ -420,6 +420,7 @@ static int emitFrame(const struct mag_buf *mag, const struct candidate *c,
 #ifdef DEMOD_2400X_COHERENT
     const struct candidate *mag_c = c;      // the magnitude decoder's candidate
     struct candidate cc;                    // its coherent version, if that decodes
+    int repaired = 0;                       // bits flipped by soft-decision repair
 
     // Coherent second pass for frames the magnitude bits don't decode. Only worth
     // trying for candidates whose bits already look fairly clean (quality gate);
@@ -433,10 +434,11 @@ static int emitFrame(const struct mag_buf *mag, const struct candidate *c,
         }
         const double t0 = cohNow();
         unsigned q1, rho2, rho2b;
+        uint16_t rel[MODES_LONG_MSG_BITS];
         cc = *c;
         const int qb = c->quality / 16 < 16 ? c->quality / 16 : 16;
         Modes.stats_current.demod_coherent_tried++;
-        if (coherentDecode(iq, mag->validLength, c->pos, cc.msg, &q1, &cc.quality2, &rho2, &rho2b) == 0) {
+        if (coherentDecode(iq, mag->validLength, c->pos, cc.msg, rel, &q1, &cc.quality2, &rho2, &rho2b) == 0) {
             coh_stats.attempts++;
             coh_stats.q_attempts[qb]++;
         }
@@ -461,6 +463,21 @@ static int emitFrame(const struct mag_buf *mag, const struct candidate *c,
                         cc = mix;
                         s2 = sm;
                         coh_stats.mixed[h]++;
+                    }
+                }
+            }
+            // Soft-decision repair: the least reliable bits, DF17/18 only, and only for an
+            // aircraft already seen (the CRC is all that checks the flipped bits)
+            if (Modes.coherent_repair && s2 < SR_ACCEPT_THRESHOLD) {
+                struct candidate rep = cc;
+                const int flips = coherentRepair(rep.msg, rel);
+                if (flips) {
+                    const int sr = scoreModesMessage(rep.msg);
+                    if (sr >= SR_ACCEPT_THRESHOLD && scoreIsKnown(sr)) {
+                        cc = rep;
+                        s2 = sr;
+                        repaired = flips;
+                        Modes.stats_current.demod_coherent_repaired++;
                     }
                 }
             }
@@ -500,6 +517,12 @@ static int emitFrame(const struct mag_buf *mag, const struct candidate *c,
         Modes.stats_current.demod_rejected_bad++;
         return 0;
     }
+#ifdef DEMOD_2400X_COHERENT
+    // A soft-decision repair is a correction the CRC alone vouches for: not reliable,
+    // like a message whose bit errors were repaired
+    if (repaired)
+        mm.reliable = 0;
+#endif
 
     // A long frame without a CRC to check (DF16/20/21/24: address/parity only)
     // also needs a clean second half
@@ -523,8 +546,9 @@ static int emitFrame(const struct mag_buf *mag, const struct candidate *c,
             atexit(cohReport);
         }
         uint8_t cmsg[MODES_LONG_MSG_BYTES];
+        uint16_t crel[MODES_LONG_MSG_BITS];
         unsigned q1, q2, rho2, rho2b;
-        if (coherentDecode(iq, mag->validLength, c->pos, cmsg, &q1, &q2, &rho2, &rho2b) == 0 && rho2 >= COHERENT_RHO2) {
+        if (coherentDecode(iq, mag->validLength, c->pos, cmsg, crel, &q1, &q2, &rho2, &rho2b) == 0 && rho2 >= COHERENT_RHO2) {
             const unsigned em = bitErrors(c->msg, mm.msg, mm.msgbits), ec = bitErrors(cmsg, mm.msg, mm.msgbits);
             coh_stats.diag_frames++;
             coh_stats.diag_mag_err[em < 3 ? em : 3]++;

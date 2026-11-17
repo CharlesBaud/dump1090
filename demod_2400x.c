@@ -107,7 +107,13 @@ static unsigned bitErrors(const uint8_t *a, const uint8_t *b, int bits)
 
 // The 12 MHz samples are 8-bit log powers (demod_log8()), whatever USE_MAGNITUDE says
 #ifndef PEAMBLE_THRES
-#define PEAMBLE_THRES 86      // (12 L(minp) - sum L(gaps)) / 2, see demod2400x_dsp.h
+#define PEAMBLE_THRES 70      // (12 L(minp) - sum L(gaps)) / 2, see demod2400x_dsp.h
+#endif
+// Preambles below this are searched too, but only for DF11/17/18 frames, whose CRC
+// checks more than the address: at this level most candidates are noise, and the short
+// address/parity frames from them would let false messages through
+#ifndef PREAMBLE_STRICT_THRES
+#define PREAMBLE_STRICT_THRES 86
 #endif
 #ifndef DATA_THRES
 #define DATA_THRES    65      // decode_bits() quality, see demod2400x_dsp.h
@@ -413,7 +419,7 @@ static int fineTiming(int pos, const uint8_t *msg, int bits, const uint8_t *udat
 // Score, decode and pass one frame on to the rest of dump1090.
 // Returns its length in bits if it was accepted, else 0; *energy gets its signal energy.
 static int emitFrame(const struct mag_buf *mag, const struct candidate *c,
-                     const int16_t *iq, struct staticdata_t *st, int nt, double *energy)
+                     const int16_t *iq, struct staticdata_t *st, int nt, int strict, double *energy)
 {
     static const struct modesMessage zeroMessage;
     struct modesMessage mm;
@@ -577,6 +583,11 @@ static int emitFrame(const struct mag_buf *mag, const struct candidate *c,
         Modes.stats_current.demod_rejected_bad++;
         return 0;
     }
+    // A weak preamble's frame: DF11/17/18 only (see PREAMBLE_STRICT_THRES)
+    if (strict && mm.msgtype != 11 && mm.msgtype != 17 && mm.msgtype != 18) {
+        Modes.stats_current.demod_rejected_bad++;
+        return 0;
+    }
 #ifdef DEMOD_2400X_COHERENT
     // A soft-decision repair is a correction the CRC alone vouches for: not reliable,
     // like a message whose bit errors were repaired
@@ -649,6 +660,23 @@ static int emitFrame(const struct mag_buf *mag, const struct candidate *c,
 }
 
 
+// Could the frame of a weak preamble at 'peak' be DF11, 17 or 18 at any of the
+// positions bestPhase() tries? Only its first 5 bits are decoded (bit = 1 if the
+// first chip is larger, as decode_bits()), which drops most noise candidates cheaply
+static int strictDfOk(int peak, const uint8_t *udata, int nt)
+{
+    for (int t = peak - 1; t <= peak + 1; t++) {
+        const uint8_t *u = &udata[(t % 6) * NU_STRIDE(nt) + t / 6 + 16];
+        int df = 0;
+        for (int i = 0; i < 5; i++)
+            df = (df << 1) | (u[2 * i] > u[2 * i + 1]);
+        if (df == 11 || df == 17 || df == 18)
+            return 1;
+    }
+    return 0;
+}
+
+
 // Search the metric for preambles and decode them. Only peaks at positions
 // 1..limit belong to this buffer; later ones are in the next buffer's overlap
 // and are searched there, so nothing is decoded twice.
@@ -672,15 +700,27 @@ static double searchFrames(const struct mag_buf *mag, struct staticdata_t *st, i
             continue;
         Modes.stats_current.demod_preambles++;
 
+        const int strict = st->metric[p] < PREAMBLE_STRICT_THRES;
+        if (strict && !strictDfOk(p, st->udata, nt))
+            continue;
+
         struct candidate c;
         bestPhase(p, st->udata, nt, &c);
         if (c.quality < DATA_THRES)
             continue;
 
+        // ... and again at the position bestPhase() chose: the coherent pass and the
+        // repairs could still correct the DF, but at a CPU cost for little gain
+        if (strict) {
+            const int df = c.msg[0] >> 3;
+            if (df != 11 && df != 17 && df != 18)
+                continue;
+        }
+
         demodFrame(&c, st->udata, nt);
 
         double energy;
-        int bits = emitFrame(mag, &c, (const int16_t *) mag->data, st, nt, &energy);
+        int bits = emitFrame(mag, &c, (const int16_t *) mag->data, st, nt, strict, &energy);
         if (bits) {
             energy_sum += energy;
             // Skip to 8 bits before the end of the frame, as demod_2400.c does

@@ -410,6 +410,24 @@ static int fineTiming(int pos, const uint8_t *msg, int bits, const uint8_t *udat
 }
 
 
+#ifdef DEMOD_2400X_COHERENT
+// Experiment (sic-dev branch): build switches, on by default here
+#ifndef COHERENT_FIRST
+#define COHERENT_FIRST 1        // 1: coherent bits first for every candidate past the gate, magnitude bits the fallback
+#endif
+#ifndef COHERENT_SIC
+#define COHERENT_SIC 1          // 1: subtract each accepted coherent frame and search its span again (float prototype)
+#endif
+
+// What the canceller needs from emitFrame(): the accepted frame and its carrier frequency
+static float sic_f;             // coherent kernel's frequency estimate (Hz), if sic_fok
+static int sic_fok;
+static uint8_t sic_lastmsg[MODES_LONG_MSG_BYTES];
+static int sic_lastbits;
+static int sicIsDup(int pos, const uint8_t *msg, int bits);
+static struct { unsigned long cancelled, nocarrier, bounds, found, dups, accepted; } sic_stats;
+#endif
+
 // Score, decode and pass one frame on to the rest of dump1090.
 // Returns its length in bits if it was accepted, else 0; *energy gets its signal energy.
 static int emitFrame(const struct mag_buf *mag, const struct candidate *c,
@@ -419,6 +437,9 @@ static int emitFrame(const struct mag_buf *mag, const struct candidate *c,
     struct modesMessage mm;
 
     int score = scoreModesMessage(c->msg);
+#ifdef DEMOD_2400X_COHERENT
+    sic_fok = 0;
+#endif
 
 #ifdef DEMOD_2400X_COHERENT
     const struct candidate *mag_c = c;      // the magnitude decoder's candidate
@@ -433,7 +454,10 @@ static int emitFrame(const struct mag_buf *mag, const struct candidate *c,
     // Coherent second pass for frames the magnitude bits don't decode. Only worth
     // trying for candidates whose bits already look fairly clean (quality gate);
     // the kernel itself stops early when the carrier isn't coherent (rho2 gate).
-    if (Modes.coherent && score < SR_ACCEPT_THRESHOLD && c->quality >= COHERENT_GATE) {
+    // COHERENT_FIRST: the coherent bits first, the magnitude bits are the fallback (and the
+    // repairs only run when both fail); otherwise only for frames the magnitude bits don't decode
+    const int mag_ok = COHERENT_FIRST && score >= SR_ACCEPT_THRESHOLD;
+    if (Modes.coherent && (COHERENT_FIRST || score < SR_ACCEPT_THRESHOLD) && c->quality >= COHERENT_GATE) {
         static int registered;
         if (!registered) {
             registered = 1;
@@ -451,6 +475,11 @@ static int emitFrame(const struct mag_buf *mag, const struct candidate *c,
         }
         else
             rho2 = 0;
+        if (rho2 >= COHERENT_RHO2) {
+            extern float coh_last_freq_hz;
+            sic_f = coh_last_freq_hz;
+            sic_fok = 1;
+        }
         if (rho2 >= COHERENT_RHO2) {
             Modes.stats_current.demod_coherent_coherent++;
             coh_stats.coherent++;
@@ -479,7 +508,7 @@ static int emitFrame(const struct mag_buf *mag, const struct candidate *c,
             }
             // Soft-decision repair: the least reliable bits, DF17/18 only, and only for an
             // aircraft already seen (the CRC is all that checks the flipped bits)
-            if (Modes.coherent_repair && s2 < SR_ACCEPT_THRESHOLD) {
+            if (Modes.coherent_repair && !mag_ok && s2 < SR_ACCEPT_THRESHOLD) {
                 struct candidate rep = cc;
                 const int flips = softRepair(rep.msg, &crb);
                 if (flips) {
@@ -578,6 +607,13 @@ static int emitFrame(const struct mag_buf *mag, const struct candidate *c,
         return 0;
     }
 #ifdef DEMOD_2400X_COHERENT
+    // What's left of a frame just subtracted can decode again: drop it
+    if (COHERENT_SIC && sicIsDup(c->pos, mm.msg, mm.msgbits)) {
+        sic_stats.dups++;
+        return 0;
+    }
+#endif
+#ifdef DEMOD_2400X_COHERENT
     // A soft-decision repair is a correction the CRC alone vouches for: not reliable,
     // like a message whose bit errors were repaired
     if (repaired)
@@ -644,9 +680,249 @@ static int emitFrame(const struct mag_buf *mag, const struct candidate *c,
         adaptive_update(&st->amag[j], st->adaptive_end - j, &mm);
     }
 
+#ifdef DEMOD_2400X_COHERENT
+    memcpy(sic_lastmsg, mm.msg, MODES_LONG_MSG_BYTES);
+    sic_lastbits = mm.msgbits;
+    sic_stats.accepted++;
+#endif
     useModesMessage(&mm);
     return mm.msgbits;
 }
+
+
+#ifdef DEMOD_2400X_COHERENT
+// ---- SIC prototype (float; experiment only) ----------------------------------
+// After an accepted frame with a coherent carrier: rebuild it at 12 MHz from its
+// bits, the coherent kernel's frequency and a least-squares fit, subtract it from
+// the complex 12 MHz signal, rewrite udata and the preamble metric over its span,
+// and search again from up to one long frame before it.
+#define SIC_PAD 12
+#define SIC_MAXN (6 * (16 + 2 * MODES_LONG_MSG_BITS) + 2 * SIC_PAD + 16)
+#define SIC_NCOL 5
+
+static const float sic_h[19] = { -0.022f, -0.056f, 0.0f, 0.110f, 0.267f, 0.458f, 0.652f, 0.780f, 0.930f, 1.0f,
+                                 0.974f, 0.857f, 0.684f, 0.484f, 0.267f, 0.078f, -0.057f, -0.127f, -0.127f };
+static struct { int pos; int bytes; uint8_t msg[MODES_LONG_MSG_BYTES]; } sic_ring[16];
+static unsigned sic_ring_n;
+static int sic_floor, sic_skipto;    // search restarts: never before sic_floor; end of the usual skip
+
+static void sicReport(void)
+{
+    fprintf(stderr, "sic: %lu accepted, %lu subtracted, %lu without a coherent carrier, %lu out of bounds, "
+            "%lu found inside or before a decoded frame, %lu duplicates dropped\n",
+            sic_stats.accepted, sic_stats.cancelled, sic_stats.nocarrier, sic_stats.bounds,
+            sic_stats.found, sic_stats.dups);
+}
+
+static int sicIsDup(int pos, const uint8_t *msg, int bits)
+{
+    unsigned n = sic_ring_n < 16 ? sic_ring_n : 16;
+    for (unsigned i = 0; i < n; i++) {
+        int d = sic_ring[i].pos - pos;
+        if (d >= -24 && d <= 24 && sic_ring[i].bytes == bits / 8 && !memcmp(sic_ring[i].msg, msg, bits / 8))
+            return 1;
+    }
+    return 0;
+}
+
+// Solve the n x n complex system G x = b (row-major, re/im arrays) by Gaussian elimination
+static int sicSolve(int n, float *gr, float *gi, float *br, float *bi)
+{
+    for (int k = 0; k < n; k++) {
+        int piv = k;
+        float best = gr[k * n + k] * gr[k * n + k] + gi[k * n + k] * gi[k * n + k];
+        for (int r = k + 1; r < n; r++) {
+            float v = gr[r * n + k] * gr[r * n + k] + gi[r * n + k] * gi[r * n + k];
+            if (v > best) { best = v; piv = r; }
+        }
+        if (best < 1e-20f) return -1;
+        if (piv != k) {
+            for (int j = 0; j < n; j++) {
+                float t = gr[k * n + j]; gr[k * n + j] = gr[piv * n + j]; gr[piv * n + j] = t;
+                t = gi[k * n + j]; gi[k * n + j] = gi[piv * n + j]; gi[piv * n + j] = t;
+            }
+            float t = br[k]; br[k] = br[piv]; br[piv] = t;
+            t = bi[k]; bi[k] = bi[piv]; bi[piv] = t;
+        }
+        for (int r = k + 1; r < n; r++) {
+            // f = G[r][k] / G[k][k]
+            float dr = gr[k * n + k], di = gi[k * n + k], den = dr * dr + di * di;
+            float fr = (gr[r * n + k] * dr + gi[r * n + k] * di) / den;
+            float fi = (gi[r * n + k] * dr - gr[r * n + k] * di) / den;
+            for (int j = k; j < n; j++) {
+                gr[r * n + j] -= fr * gr[k * n + j] - fi * gi[k * n + j];
+                gi[r * n + j] -= fr * gi[k * n + j] + fi * gr[k * n + j];
+            }
+            br[r] -= fr * br[k] - fi * bi[k];
+            bi[r] -= fr * bi[k] + fi * br[k];
+        }
+    }
+    for (int k = n - 1; k >= 0; k--) {
+        float sr = br[k], si = bi[k];
+        for (int j = k + 1; j < n; j++) {
+            sr -= gr[k * n + j] * br[j] - gi[k * n + j] * bi[j];
+            si -= gr[k * n + j] * bi[j] + gi[k * n + j] * br[j];
+        }
+        float dr = gr[k * n + k], di = gi[k * n + k], den = dr * dr + di * di;
+        br[k] = (sr * dr + si * di) / den;
+        bi[k] = (si * dr - sr * di) / den;
+    }
+    return 0;
+}
+
+// Subtract the last accepted frame (sic_lastmsg) found at 12 MHz position 'pos'.
+// Returns 1 if subtracted.
+static int sicCancel(const struct mag_buf *mag, struct staticdata_t *st, int nt, int mlen, int pos)
+{
+    const int16_t *iq = (const int16_t *) mag->data;
+    const int bits = sic_lastbits;
+    const int nchip = 16 + 2 * bits;
+    uint8_t a[16 + 2 * MODES_LONG_MSG_BITS];
+    static float zr[SIC_MAXN], zi[SIC_MAXN], m[SIC_MAXN];
+
+    memset(a, 0, 16);
+    a[0] = a[2] = a[7] = a[9] = 1;
+    for (int i = 0; i < bits; i++) {
+        int b = (sic_lastmsg[i >> 3] >> (7 - (i & 7))) & 1;
+        a[16 + 2 * i] = (uint8_t) b;
+        a[17 + 2 * i] = (uint8_t) !b;
+    }
+
+    const int t0 = pos - 3 - SIC_PAD, t1 = pos + 3 + 6 * (nchip - 1) + SIC_PAD;
+    if (t0 < 0 || t1 >= nt || t1 >= mlen + 90 || (unsigned) (t1 / 5 + 9) > mag->validLength) {
+        sic_stats.bounds++;
+        return 0;
+    }
+    const int n = t1 - t0 + 1;
+    for (int t = t0; t <= t1; t++) {
+        int32_t ch[1][2];
+        if (coherentChips(iq, mag->validLength, t, ch, 1) < 0) { sic_stats.bounds++; return 0; }
+        zr[t - t0] = (float) ch[0][0];
+        zi[t - t0] = (float) ch[0][1];
+    }
+
+    // Position: the best of pos-3 .. pos+3 by chip contrast
+    int best = pos;
+    float bc = -1e30f;
+    for (int dp = -3; dp <= 3; dp++) {
+        float s = 0;
+        for (int k = 0; k < nchip; k++) {
+            int x = pos + dp + 6 * k - t0;
+            float v = sqrtf(zr[x] * zr[x] + zi[x] * zi[x]);
+            s += a[k] ? v : -v;
+        }
+        if (s > bc) { bc = s; best = dp; }
+    }
+    pos += best;
+
+    // Frequency: the coherent kernel's estimate, sign and +-2 kHz checked on the pulse chips
+    float bw = 0, bp = -1;
+    for (int sg = -1; sg <= 1; sg += 2) {
+        for (int df = -2000; df <= 2000; df += 250) {
+            const float w = 2 * (float) M_PI * (sg * sic_f + df) / 12e6f;
+            float sr = 0, si = 0, c = 1, s = 0;
+            const float c6 = cosf(6 * w), s6 = sinf(6 * w);
+            for (int k = 0; k < nchip; k++) {
+                if (a[k]) {
+                    int x = pos + 6 * k - t0;
+                    sr += zr[x] * c + zi[x] * s;      // z * e^{-jw t}
+                    si += zi[x] * c - zr[x] * s;
+                }
+                const float nc = c * c6 - s * s6, ns = c * s6 + s * c6;
+                c = nc; s = ns;
+            }
+            if (sr * sr + si * si > bp) { bp = sr * sr + si * si; bw = w; }
+        }
+    }
+
+    // Envelope and its derivative
+    memset(m, 0, sizeof(float) * (size_t) n);
+    for (int k = 0; k < nchip; k++) {
+        if (!a[k]) continue;
+        for (int d = -9; d <= 9; d++) {
+            int x = pos + 6 * k + d - t0;
+            if (x >= 0 && x < n) m[x] += sic_h[d + 9];
+        }
+    }
+    float mmax = 0;
+    for (int x = 0; x < n; x++) if (m[x] > mmax) mmax = m[x];
+    if (mmax <= 0) return 0;
+
+    // Derotate once: y = z e^{-jw(t-pos)} (rotation updated step by step, renormalised)
+    static float yr[SIC_MAXN], yi[SIC_MAXN], v[SIC_NCOL][SIC_MAXN];
+    {
+        const float cr = cosf(bw), ci = sinf(bw);
+        float er = cosf(bw * (t0 - pos)), ei = sinf(bw * (t0 - pos));
+        for (int x = 0; x < n; x++) {
+            yr[x] = zr[x] * er + zi[x] * ei;
+            yi[x] = zi[x] * er - zr[x] * ei;
+            const float nr = er * cr - ei * ci, ni = er * ci + ei * cr;
+            er = nr; ei = ni;
+            if ((x & 63) == 63) { const float g = 1.5f - 0.5f * (er * er + ei * ei); er *= g; ei *= g; }
+        }
+    }
+    // Real columns: m, m s, m mn, m mn^2, dm (s: time across the frame, mn = m / max)
+    for (int x = 0; x < n; x++) {
+        const float s = (x - n / 2.0f) / n, mn = m[x] / mmax;
+        v[0][x] = m[x];
+        v[1][x] = m[x] * s;
+        v[2][x] = m[x] * mn;
+        v[3][x] = m[x] * mn * mn;
+        v[4][x] = (x > 0 && x < n - 1) ? (m[x + 1] - m[x - 1]) * 0.5f : 0;
+    }
+    float gr[SIC_NCOL * SIC_NCOL], gi[SIC_NCOL * SIC_NCOL] = { 0 }, br[SIC_NCOL], bi[SIC_NCOL];
+    for (int i = 0; i < SIC_NCOL; i++) {
+        for (int j = i; j < SIC_NCOL; j++) {
+            float sum = 0;
+            for (int x = 0; x < n; x++) sum += v[i][x] * v[j][x];
+            gr[i * SIC_NCOL + j] = gr[j * SIC_NCOL + i] = sum;
+        }
+        float sr = 0, si = 0;
+        for (int x = 0; x < n; x++) { sr += v[i][x] * yr[x]; si += v[i][x] * yi[x]; }
+        br[i] = sr;
+        bi[i] = si;
+    }
+    if (sicSolve(SIC_NCOL, gr, gi, br, bi) < 0)
+        return 0;
+
+    // Subtract (model rotated back), then the same rounding and log as upsample12
+    const int stride = NU_STRIDE(nt);
+    {
+        const float cr = cosf(bw), ci = sinf(bw);
+        float er = cosf(bw * (t0 - pos)), ei = sinf(bw * (t0 - pos));
+        for (int x = 0; x < n; x++) {
+            float hr = 0, hi = 0;
+            for (int j = 0; j < SIC_NCOL; j++) { hr += br[j] * v[j][x]; hi += bi[j] * v[j][x]; }
+            const float mr = hr * er - hi * ei, mi = hr * ei + hi * er;
+            const int32_t ri = (int32_t) lrintf(zr[x] - mr), qi = (int32_t) lrintf(zi[x] - mi);
+            const int32_t si = (ri + UPSAMPLE_ROUND) >> UPSAMPLE_SHIFT, sq = (qi + UPSAMPLE_ROUND) >> UPSAMPLE_SHIFT;
+            const int t = t0 + x;
+            st->udata[(t % 6) * stride + t / 6] = demod_log8((uint32_t) (si * si) + (uint32_t) (sq * sq));
+            const float nr = er * cr - ei * ci, ni = er * ci + ei * cr;
+            er = nr; ei = ni;
+            if ((x & 63) == 63) { const float g = 1.5f - 0.5f * (er * er + ei * ei); er *= g; ei *= g; }
+        }
+    }
+
+    // The preamble metric over the span, as locate_preamble (metric[p] uses udata p .. p + 90)
+    int p0 = t0 - 90 > 0 ? t0 - 90 : 0, p1 = t1 < mlen - 1 ? t1 : mlen - 1;
+    for (int p = p0; p <= p1; p++) {
+        const uint8_t *u = st->udata + (p % 6) * stride + p / 6;
+        unsigned minp = MIN(MIN(u[0], u[2]), MIN(u[7], u[9]));
+        unsigned gap = u[1] + u[3] + u[4] + u[5] + u[6] + u[8] + u[10] + u[11] + u[12] + u[13] + u[14] + u[15];
+        unsigned v = 12 * minp > gap ? MIN((12 * minp - gap) >> 1, 255u) : 0;
+        st->metric[p] = v < PEAMBLE_THRES ? 0 : (uint8_t) v;
+    }
+
+    unsigned r = sic_ring_n++ % 16;
+    sic_ring[r].pos = pos;
+    sic_ring[r].bytes = bits / 8;
+    memcpy(sic_ring[r].msg, sic_lastmsg, (size_t) (bits / 8));
+    sic_stats.cancelled++;
+    return 1;
+}
+// ---- end SIC ------------------------------------------------------------------
+#endif /* DEMOD_2400X_COHERENT */
 
 
 // Search the metric for preambles and decode them. Only peaks at positions
@@ -660,6 +936,16 @@ static double searchFrames(const struct mag_buf *mag, struct staticdata_t *st, i
     double energy_sum = 0;
     int p;
 
+#ifdef DEMOD_2400X_COHERENT
+    static int sic_registered;
+    if (COHERENT_SIC && !sic_registered) {
+        sic_registered = 1;
+        atexit(sicReport);
+    }
+    sic_ring_n = 0;
+    sic_floor = MAX(1, st->next_start);
+    sic_skipto = 0;
+#endif
     for (p = MAX(1, st->next_start); p <= last; p++) {
 
         // Most of the metric is noise below the threshold: skip it 8 at a time
@@ -683,6 +969,30 @@ static double searchFrames(const struct mag_buf *mag, struct staticdata_t *st, i
         int bits = emitFrame(mag, &c, (const int16_t *) mag->data, st, nt, &energy);
         if (bits) {
             energy_sum += energy;
+#ifdef DEMOD_2400X_COHERENT
+            // Subtract the frame, then search again from up to one long frame before it:
+            // frames that start under it or end under it. Restarts never go back past
+            // sic_floor, which only moves forward, so the loop ends.
+            if (COHERENT_SIC && Modes.coherent) {
+                if (c.pos < sic_skipto)
+                    sic_stats.found++;      // the usual skip would never have tried it
+                if (c.pos + bits * 12 > sic_skipto)
+                    sic_skipto = c.pos + bits * 12;
+                if (!sic_fok)
+                    sic_stats.nocarrier++;
+                else if (sicCancel(mag, st, nt, mlen, c.pos)) {
+                    int back = c.pos - 12 * MODES_LONG_MSG_BITS;
+                    if (back < sic_floor)
+                        back = sic_floor;
+                    if (c.pos + 3 > sic_floor)
+                        sic_floor = c.pos + 3;
+                    p = back - 1;
+                    continue;
+                }
+                if (c.pos + 3 > sic_floor)
+                    sic_floor = c.pos + 3;
+            }
+#endif
             // Skip to 8 bits before the end of the frame, as demod_2400.c does
             p = c.pos + bits * 12 - 1;
         }

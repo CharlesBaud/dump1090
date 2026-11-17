@@ -322,6 +322,44 @@ DEMOD_2400X. The method, results and settings are in
   when it stops at the gate), 10.8 / 5.0 µs on the Pi 3B, 1.30 / 0.61 µs
   with AVX2 on x86-64.
 
+## Experiment: coherent first, and subtracting decoded frames (sic-dev)
+
+Branch `sic-dev` only. Two build switches in `demod_2400x.c`, both on by
+default there; `make CPPFLAGS="-DCOHERENT_FIRST=0 -DCOHERENT_SIC=0"` gives
+output identical to soft-fix-dev.
+
+* **`COHERENT_FIRST`:** every candidate past `COHERENT_GATE` is decoded
+  coherently first, and the magnitude bits are the fallback; the repairs only
+  run when both fail. Same frame count on the 60 s test (66,207); 361 DF11s
+  differ only in the parity bits (the interrogator code they imply), and the
+  coherent version is the one seen more often for that aircraft in 220 of
+  them, the magnitude version in 123. Demodulation 3.5 → 3.6 s on the Pi 5.
+  Of the frames the magnitude bits decode, 96% have a coherent carrier.
+* **`COHERENT_SIC`:** after each accepted frame with a coherent carrier, the
+  frame is rebuilt at 12 MHz and subtracted from the complex 12 MHz signal:
+  chips from its bits, shaped by a 19-tap chip response learned from strong
+  frames (`sic_h`), on the coherent kernel's frequency (sign and ±2 kHz
+  checked on the pulse chips), with amplitude, slope, two AM-to-PM terms and
+  a timing (derivative) term fitted by least squares. `udata` and the
+  preamble metric are rewritten over the span, and the search restarts up to
+  one long frame before it; a re-decode of what is left of a subtracted frame
+  (same bits within 2 µs) is dropped.
+* **What subtraction can reach:** offline, every model of a lone frame left
+  the residue about 10-12 dB below it (pulse shape learned per frame, per
+  pulse amplitude and phase, AM-to-PM, chirp); 77% of the residue is on the
+  pulse edges, and the strongest frames clip the 8-bit ADC. Summed over 0.5 µs
+  chips, as a weaker frame's decoder sees it, the residue is 12.0 dB down.
+* **Results** (first 60 s of a 5-minute Pi 4 RTL-SDR capture, against
+  coherent first alone): 66,207 → 67,229 messages (+1.5%; 1,052 new, 30
+  lost), DF17 +210; 99.5% of the new frames overlap a decoded frame, and all
+  560 new DF11/17/18 are from aircraft already seen. 63,827 frames subtracted,
+  3,099 skipped for no coherent carrier, 8,991 re-decodes dropped.
+* **Cost:** demodulation 3.6 → 9.6 s on the Pi 5, about 90 µs per subtracted
+  frame, in float. A cheap gate (a rejected candidate or another preamble
+  peak near the frame) passes almost every frame, so it doesn't help.
+* **Status:** prototype, not for merging: float arithmetic, scalar only, no
+  decoy or track checks yet.
+
 ## Raspberry Pi 3B
 
 A Pi 3 Model B (Rev 1.2, Cortex-A53 at 1.2 GHz) running Volumio, a 32-bit OS,

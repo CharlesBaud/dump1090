@@ -153,12 +153,12 @@ then `make test`):
 
 | Compiler | Target | Warnings | `make test` |
 |---|---|---|---|
-| gcc 14.2 | AArch64 (Pi 5) | 0 | pass (95 validations) |
-| clang 19.1 | AArch64 (Pi 5) | 0 | pass (95 validations) |
-| gcc 14.2 (cross) | ARMv7 | 0 | `starch-benchmark -V` passes (95), run natively on AArch64 |
-| gcc 14.2 (cross) | x86-64 AVX2 | 0 | pass under qemu-x86_64 (89 validations) |
-| clang 19.1 (cross) | x86-64 AVX2 | 0 | pass under qemu-x86_64 (89 validations) |
-| gcc (native) | x86-64 AVX2 | 0 | `starch-benchmark -V` passes on real hardware |
+| gcc 14.2 | AArch64 (Pi 5) | 0 | pass (131 validations) |
+| clang 19.1 | AArch64 (Pi 5) | 0 | pass (131 validations) |
+| gcc 14.2 (cross) | ARMv7 | 0 | `starch-benchmark -V` passes (131), run natively on AArch64 |
+| gcc 14.2 (cross) | x86-64 AVX2 | 0 | pass under qemu-x86_64 (113 validations) |
+| clang 19.1 (cross) | x86-64 AVX2 | 0 | pass under qemu-x86_64 (113 validations) |
+| gcc (native, MinGW) | x86-64 AVX2 | 0 | `starch-benchmark -V` passes on real hardware (113, Core i5-8300H) |
 
 The gcc and clang AArch64 builds give byte-identical decoder output,
 timestamps included. On x86, clang with `-ffast-math` compiles AVX2 square
@@ -172,4 +172,6 @@ correctness also needs a run on real hardware. All the AVX2 kernels, including t
 hardware, also after the change to 8-bit log power, which made the AVX2
 `upsample12` 39% faster (1.43 → 0.87 ms per call) and `locate_preamble` 47%
 faster (0.38 → 0.20 ms). The ±250 kHz coherent frequency search added since
-also passes on real x86-64 hardware (1.30 µs per full decode with AVX2).
+also passes on real x86-64 hardware (1.30 µs per full decode with AVX2), as
+do the `weakest_bits` kernel and everything else as of version 11.2y (113
+validations).

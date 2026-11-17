@@ -80,6 +80,13 @@ uint32_t modesChecksum(const uint8_t *message, int bits)
     return rem;
 }
 
+// Syndrome of a single bit error at 'bit' (0..111) in a 112-bit message.
+// The syndrome is linear: that of several bit errors is the XOR of theirs
+uint32_t modesBitSyndrome(int bit)
+{
+    return single_bit_syndrome[bit];
+}
+
 static struct errorinfo *bitErrorTable_short;
 static int bitErrorTableSize_short;
 

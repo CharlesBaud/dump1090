@@ -22,3 +22,5 @@
 #include "../impl/magnitude_uc8.neon.c"
 #include "../impl/mean_power_u16.generic.c"
 #include "../impl/mean_power_u16.neon.c"
+#include "../impl/weakest_bits.generic.c"
+#include "../impl/weakest_bits.neon.c"

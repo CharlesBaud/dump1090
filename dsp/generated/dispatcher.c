@@ -1097,6 +1097,83 @@ starch_upsample12_regentry starch_upsample12_registry[] = {
     { 0, NULL, NULL, NULL, NULL }
 };
 
+/* dispatcher / registry for weakest_bits */
+
+starch_weakest_bits_regentry * starch_weakest_bits_select() {
+    for (starch_weakest_bits_regentry *entry = starch_weakest_bits_registry;
+         entry->name;
+         ++entry)
+    {
+        if (entry->flavor_supported && !(entry->flavor_supported()))
+            continue;
+        return entry;
+    }
+    return NULL;
+}
+
+static void starch_weakest_bits_dispatch ( const uint32_t * arg0, unsigned arg1, uint32_t arg2, uint32_t * arg3, unsigned * arg4 ) {
+    starch_weakest_bits_regentry *entry = starch_weakest_bits_select();
+    if (!entry)
+        abort();
+
+    starch_weakest_bits = entry->callable;
+    starch_weakest_bits ( arg0, arg1, arg2, arg3, arg4 );
+}
+
+starch_weakest_bits_ptr starch_weakest_bits = starch_weakest_bits_dispatch;
+
+void starch_weakest_bits_set_wisdom (const char * const * received_wisdom)
+{
+    /* re-rank the registry based on received wisdom */
+    starch_weakest_bits_regentry *entry;
+    for (entry = starch_weakest_bits_registry; entry->name; ++entry) {
+        const char * const *search;
+        for (search = received_wisdom; *search; ++search) {
+            if (!strcmp(*search, entry->name)) {
+                break;
+            }
+        }
+        if (*search) {
+            /* matches an entry in the wisdom list, order by position in the list */
+            entry->rank = search - received_wisdom;
+        } else {
+            /* no match, rank after all possible matches, retaining existing order */
+            entry->rank = (search - received_wisdom) + (entry - starch_weakest_bits_registry);
+        }
+    }
+
+    /* re-sort based on the new ranking */
+    qsort(starch_weakest_bits_registry, entry - starch_weakest_bits_registry, sizeof(starch_weakest_bits_regentry), starch_regentry_rank_compare);
+
+    /* reset the implementation pointer so the next call will re-select */
+    starch_weakest_bits = starch_weakest_bits_dispatch;
+}
+
+starch_weakest_bits_regentry starch_weakest_bits_registry[] = {
+  
+#ifdef STARCH_MIX_AARCH64
+    { 0, "neon_armv8_neon_simd", "armv8_neon_simd", starch_weakest_bits_neon_armv8_neon_simd, cpu_supports_armv8_simd },
+    { 1, "generic_armv8_neon_simd", "armv8_neon_simd", starch_weakest_bits_generic_armv8_neon_simd, cpu_supports_armv8_simd },
+    { 2, "generic_generic", "generic", starch_weakest_bits_generic_generic, NULL },
+#endif /* STARCH_MIX_AARCH64 */
+  
+#ifdef STARCH_MIX_ARM
+    { 0, "neon_armv7a_neon_vfpv4", "armv7a_neon_vfpv4", starch_weakest_bits_neon_armv7a_neon_vfpv4, cpu_supports_armv7_neon_vfpv4 },
+    { 1, "generic_generic", "generic", starch_weakest_bits_generic_generic, NULL },
+    { 2, "generic_armv7a_neon_vfpv4", "armv7a_neon_vfpv4", starch_weakest_bits_generic_armv7a_neon_vfpv4, cpu_supports_armv7_neon_vfpv4 },
+#endif /* STARCH_MIX_ARM */
+  
+#ifdef STARCH_MIX_GENERIC
+    { 0, "generic_generic", "generic", starch_weakest_bits_generic_generic, NULL },
+#endif /* STARCH_MIX_GENERIC */
+  
+#ifdef STARCH_MIX_X86
+    { 0, "generic_x86_avx2", "x86_avx2", starch_weakest_bits_generic_x86_avx2, cpu_supports_avx2 },
+    { 1, "generic_generic", "generic", starch_weakest_bits_generic_generic, NULL },
+#endif /* STARCH_MIX_X86 */
+    { 0, NULL, NULL, NULL, NULL }
+};
+
 
 int starch_read_wisdom (const char * path)
 {
@@ -1155,6 +1232,10 @@ int starch_read_wisdom (const char * path)
     }
     int rank_upsample12 = 0;
     for (starch_upsample12_regentry *entry = starch_upsample12_registry; entry->name; ++entry) {
+        entry->rank = 0;
+    }
+    int rank_weakest_bits = 0;
+    for (starch_weakest_bits_regentry *entry = starch_weakest_bits_registry; entry->name; ++entry) {
         entry->rank = 0;
     }
 
@@ -1302,6 +1383,15 @@ int starch_read_wisdom (const char * path)
             for (starch_upsample12_regentry *entry = starch_upsample12_registry; entry->name; ++entry) {
                 if (!strcmp(impl, entry->name)) {
                     entry->rank = ++rank_upsample12;
+                    break;
+                }
+            }
+            continue;
+        }
+        if (!strcmp(name, "weakest_bits")) {
+            for (starch_weakest_bits_regentry *entry = starch_weakest_bits_registry; entry->name; ++entry) {
+                if (!strcmp(impl, entry->name)) {
+                    entry->rank = ++rank_weakest_bits;
                     break;
                 }
             }
@@ -1459,6 +1549,17 @@ int starch_read_wisdom (const char * path)
 
         /* reset the implementation pointer so the next call will re-select */
         starch_upsample12 = starch_upsample12_dispatch;
+    }
+    {
+        starch_weakest_bits_regentry *entry;
+        for (entry = starch_weakest_bits_registry; entry->name; ++entry) {
+            if (!entry->rank)
+                entry->rank = ++rank_weakest_bits;
+        }
+        qsort(starch_weakest_bits_registry, entry - starch_weakest_bits_registry, sizeof(starch_weakest_bits_regentry), starch_regentry_rank_compare);
+
+        /* reset the implementation pointer so the next call will re-select */
+        starch_weakest_bits = starch_weakest_bits_dispatch;
     }
 
     return 0;

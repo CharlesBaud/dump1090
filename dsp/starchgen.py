@@ -56,6 +56,9 @@ gen.add_function(
 gen.add_function(
    name = 'decode_bits',
    argtypes = ['const uint8_t *', 'unsigned', 'uint8_t *', 'unsigned *'])
+gen.add_function(
+   name = 'weakest_bits',
+   argtypes = ['const uint32_t *', 'unsigned', 'uint32_t', 'uint32_t *', 'unsigned *'])
 
 gen.add_flavor(
     name = 'generic',

@@ -16,3 +16,4 @@
 #include "../impl/magnitude_sc16q11.generic.c"
 #include "../impl/magnitude_uc8.generic.c"
 #include "../impl/mean_power_u16.generic.c"
+#include "../impl/weakest_bits.generic.c"

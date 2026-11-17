@@ -55,6 +55,16 @@ scaling, on by default with a flag to disable, no static state) and ran the
 tests on the Pi 3B, Pi 4, Pi 5 and an x86 PC. Extending it to the magnitude
 bits followed my remark that not every frame can be decoded coherently.
 
+Speeding up the repairs came from my review questions (the order of the
+passes, whether the CRC lookups were fast enough, syndromes against bit
+flipping). Claude Code profiled as it went; the packed cost-and-bit key, the
+16-bit key of 9 + 7 bits with the cost scaled by 1.5 and clipped, and the NEON
+version taking the minimum repeatedly were my suggestions, which Claude Code
+implemented as the `weakest_bits` starch kernel and checked bit-exact on
+AArch64, ARMv7 and x86. While re-measuring it found one wrong tracked-aircraft
+repair on a recording, and at my choice that repair now flips at most 3 bits
+from the magnitude bits.
+
 ## How it was checked
 
 * Every SIMD kernel is checked bit-for-bit against the generic version by

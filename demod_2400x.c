@@ -41,8 +41,11 @@ static struct {
     unsigned long q_attempts[17], q_coherent[17], q_rescued[17];    // by magnitude quality / 16
 } coh_stats;
 
+// Only timed for the COHERENT_STATS report: reading the clock for every frame costs CPU
 static double cohNow(void)
 {
+    if (!COHERENT_STATS)
+        return 0;
     struct timespec t;
     clock_gettime(CLOCK_MONOTONIC, &t);
     return t.tv_sec + 1e-9 * t.tv_nsec;
@@ -425,6 +428,7 @@ static int emitFrame(const struct mag_buf *mag, const struct candidate *c,
     int coh_ok = 0;
     uint16_t rel[MODES_LONG_MSG_BITS];      // their reliabilities
     uint16_t mrel[MODES_LONG_MSG_BITS];     // the magnitude bits' (quality >= COHERENT_REPAIR_MAG_GATE)
+    struct repairBits crb, mrb;             // what the repairs work out from each, shared by them
 
     // Coherent second pass for frames the magnitude bits don't decode. Only worth
     // trying for candidates whose bits already look fairly clean (quality gate);
@@ -453,6 +457,8 @@ static int emitFrame(const struct mag_buf *mag, const struct candidate *c,
             coh_stats.q_coherent[qb]++;
             coh_c = cc;
             coh_ok = 1;
+            crb.rel = rel;
+            crb.ready = 0;
             int s2 = scoreModesMessage(cc.msg);
             if (COHERENT_MIX && s2 < SR_ACCEPT_THRESHOLD) {
                 // Each half from the other decoder in turn: the coherent first half with the
@@ -475,7 +481,7 @@ static int emitFrame(const struct mag_buf *mag, const struct candidate *c,
             // aircraft already seen (the CRC is all that checks the flipped bits)
             if (Modes.coherent_repair && s2 < SR_ACCEPT_THRESHOLD) {
                 struct candidate rep = cc;
-                const int flips = softRepair(rep.msg, rel);
+                const int flips = softRepair(rep.msg, &crb);
                 if (flips) {
                     const int sr = scoreModesMessage(rep.msg);
                     if (sr >= SR_ACCEPT_THRESHOLD && scoreIsKnown(sr)) {
@@ -514,8 +520,10 @@ static int emitFrame(const struct mag_buf *mag, const struct candidate *c,
             const int d = chip[2 * i + 1] - chip[2 * i];
             mrel[i] = (uint16_t) (d < 0 ? -d : d);
         }
+        mrb.rel = mrel;
+        mrb.ready = 0;
         struct candidate rep = *mag_c;
-        const int flips = softRepair(rep.msg, mrel);
+        const int flips = softRepair(rep.msg, &mrb);
         if (flips) {
             const int sr = scoreModesMessage(rep.msg);
             if (sr >= SR_ACCEPT_THRESHOLD && scoreIsKnown(sr)) {
@@ -534,7 +542,10 @@ static int emitFrame(const struct mag_buf *mag, const struct candidate *c,
         if (p == 0 ? !coh_ok : mag_c->quality < COHERENT_REPAIR_MAG_GATE)
             continue;
         struct candidate rep = p == 0 ? coh_c : *mag_c;
-        const int changed = aprioriRepair(rep.msg, p == 0 ? rel : mrel);
+        // Fewer flips from the magnitude bits: their reliabilities are rougher, and a
+        // smaller search makes a chance match of the CRC less likely
+        const int changed = aprioriRepair(rep.msg, p == 0 ? &crb : &mrb,
+                                          p == 0 ? COHERENT_REPAIR_FLIPS : COHERENT_APRIORI_MAG_FLIPS);
         if (changed) {
             const int sr = scoreModesMessage(rep.msg);
             if (sr >= SR_ACCEPT_THRESHOLD && scoreIsKnown(sr)) {

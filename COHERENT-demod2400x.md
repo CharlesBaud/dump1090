@@ -195,15 +195,29 @@ reliable ones:
 * a quick test first drops frames that can't become DF17/18: the DF bits that
   would have to change must all be among the least reliable (three quarters of
   the frames stop here);
-* one pass over the 112 bits keeps the 12 least reliable
-  (`COHERENT_REPAIR_BITS`), in order;
+* the `weakest_bits` starch kernel picks the 12 least reliable
+  (`COHERENT_REPAIR_BITS`), in order (see below);
 * every combination of 1 to 4 of them (`COHERENT_REPAIR_FLIPS`) is a candidate.
-  The CRC syndrome is linear, so a combination's is the XOR of its bits'; a
+  The CRC syndrome is linear, so a combination's is the XOR of its bits' (each
+  from `crc.c`'s single-bit table, `modesBitSyndrome()`); a
   combination of up to 4 is two disjoint sets of up to 2, so the 79 sets go in a
   small hash table by syndrome and each is looked up against the frame's
   syndrome XOR its own, instead of trying all 793 combinations;
 * the cheapest one (smallest sum of flipped reliabilities) that gives a DF17/18
   with a correct CRC wins.
+
+Picking the weakest bits is the costliest step. Each bit is a 16-bit key, its
+cost × 3/8 clipped to 511 (9 bits) above its bit number (7 bits), so one
+compare orders by cost and then bit. The NEON version keeps the 112 keys in 14
+vectors and repeatedly takes the minimum, with no branches; the generic one
+keeps a short sorted list, the quicker way without vectors. Only bits under a
+ceiling can be among the n weakest: the costs add up to at most 2 × 65536, so
+the n-th weakest costs at most 2 × 65536 / (112 − n + 1); the rest are left
+out. The two repairs share one frame's costs and weakest bits, and the DF
+pre-test counts without stopping early, which the compiler vectorises. Together
+these more than halved the repairs' CPU without changing what they find, apart
+from the 9-bit keys, which change a few near-ties (3 of 97,000 messages on the
+60 s capture).
 
 The same repair also runs on the magnitude bits, with each bit's log power
 contrast between its two chips as the reliability. That covers transmitters
@@ -218,7 +232,11 @@ each reliable tracked aircraft recently heard in a CRC-checked message whose
 DF17 differs from the frame's DF and address bits only in bits among the
 frame's 24 weakest (`COHERENT_APRIORI_WEAK`), those bits are set to the
 aircraft's and the rest is repaired as above (up to 4 of the 12 weakest other
-bits). The rule that changed bits must be weak is what stops a frame from an
+bits; 3 from the magnitude bits, `COHERENT_APRIORI_MAG_FLIPS`, see below). Most
+frames have no aircraft that could match, so a quick scan comes first, letting
+through any bit under the 24-weakest ceiling, and the sort only follows when an
+aircraft passes; one flip table then serves every aircraft, since the syndrome
+with an aircraft's bits set is the frame's XOR those bits'. The rule that changed bits must be weak is what stops a frame from an
 untracked aircraft being taken for a tracked one a few address bits away: such
 a frame's address bits were received right, so they are rarely weak. With the
 rule, 150 random decoy aircraft and every tracked aircraft replaced by a
@@ -246,7 +264,12 @@ like a message whose bit errors `--fix` repaired.
   search on the 60 s capture, each testing 793 combinations: at most about 1.7
   CRC matches a minute before the known-aircraft test (more with the magnitude
   path), against about 1,060 good repairs. `--fix` tests 112 syndromes per
-  failed DF17.
+  failed DF17. One chance match did get through on RTL-SDR b: a
+  tracked-aircraft repair from the magnitude bits, 4 flips, gave a DF17 with
+  the right address but a wrong altitude and position (dump1090's CPR speed
+  check rejected the position). From the magnitude bits that repair now
+  flips at most 3 (299 combinations instead of 793), which removed it for
+  2–8% fewer tracked-aircraft repairs.
 
 ## Results
 
@@ -296,32 +319,26 @@ receivers.
 Most attempts are not coherent: they are noise, overlapping frames, or
 aircraft whose transmitters aren't phase-stable.
 
-Soft-decision repair (step 8), with `--fix` (the packaged configuration);
-`--no-soft-fix` → default:
+Soft-decision repair (step 8), with `--fix` (the packaged configuration) and
+`--throttle`: no repair (`--no-soft-fix`) → the coherent and magnitude
+repairs → also the tracked-aircraft repair (the default):
 
 | | RTL-SDR a | RTL-SDR b | SDRplay 5 MHz |
 |---|---|---|---|
-| Repaired: coherent + magnitude | 902 + 157 | 1,028 + 169 | 439 + 22 |
-| Messages | 96,370 → 97,389 (+1.1%) | 111,609 → 112,752 (+1.0%) | 12,220 → 12,665 (+3.6%) |
-| DF17 (ADS-B) | 13,823 → 14,857 (+7.5%) | 14,365 → 15,543 (+8.2%) | 1,662 → 2,107 (+27%) |
-| Global CPR positions (`--throttle`) | 4,692 → 5,064 (+7.9%) | 4,763 → 5,162 (+8.4%) | 562 → 726 (+29%) |
-| Aircraft with a position at the end | 110 → 111 (of 141) | | 18 → 21 (of 26) |
+| Repairs: coherent + magnitude + tracked aircraft | 899 + 157 + 196 | 1,024 + 169 + 198 | 439 + 22 + 195 |
+| Messages | 96,370 → 97,388 → 97,577 (+1.3%) | 111,609 → 112,750 → 112,941 (+1.2%) | 12,220 → 12,666 → 12,857 (+5.2%) |
+| DF17 (ADS-B) | 13,823 → 14,856 → 15,049 (+8.9%) | 14,365 → 15,541 → 15,735 (+9.5%) | 1,662 → 2,108 → 2,299 (+38%) |
+| Global CPR positions | 4,692 → 5,064 → 5,136 (+9.5%) | 4,763 → 5,162 → 5,234 (+9.9%) | 562 → 726 → 799 (+42%) |
 
-The tracked-aircraft repair, on top of those (with `--throttle`): RTL-SDR a
-DF17 14,857 → 15,066 (+1.4%), global CPR positions 5,064 → 5,143 (+1.6%);
-SDRplay DF17 2,107 → 2,302 (+9.3%), positions 726 → 800 (+10%). On the
-synthetic frames it raises those decoded at 3.9 dB from 1,244 to 1,472 (+18%)
-and at 3.0 dB from 505 to 765 (+51%), all with the right contents: its gain is
-on the weakest signals. It costs about 8% more demodulation CPU on the Pi 5 and
-4% on the Pi 3B, mostly in finding each candidate frame's weakest bits.
+No global CPR attempt had bad data or failed the speed check in any of these
+runs (with `--throttle`; without it the tracker's timing follows the file
+reading and these counts mean little). On synthetic frames with a carrier
+offset, the frames decoded at 3.9 dB per sample go from 520 to 1,245 to 1,472
+of 3,000, and at 3.0 dB from 135 to 505 to 767, every one with the right
+contents: the tracked-aircraft repair's gain is on the weakest signals.
 
-No global CPR attempt had bad data or failed the speed check, with or without
-the repair (runs with `--throttle`; without it the tracker's timing follows the
-file reading and these counts mean little). Demodulation CPU (user time, best
-of three): Pi 5 +5.5%, Pi 3B +4.0% (20 s capture on one core). On synthetic
-frames with a carrier offset, the repair takes the frames decoded at 3.9 dB
-per sample from 1,055 to 1,244 of 3,000 (+18%), and at 3.0 dB from 382 to 505
-(+32%); every one with the right contents.
+Demodulation CPU of all three repairs together (user time, best of 7 / 3, one
+core): +5.6% on the Pi 5 (60 s capture), +5.3% on the Pi 3B (20 s capture).
 
 ### Live counts
 
@@ -490,6 +507,7 @@ not `CFLAGS`, which would replace `-O3`).
 | `COHERENT_REPAIR_MIN_MARGIN` | 1 | ... and the next-best valid repair at least this much costlier |
 | `COHERENT_APRIORI_WEAK` | 24 | Tracked-aircraft repair: the DF and address bits it changes must be among the frame's this many weakest |
 | `COHERENT_APRIORI_CANDIDATES` | 8 | ... trying at most this many aircraft |
+| `COHERENT_APRIORI_MAG_FLIPS` | 3 | ... flipping at most this many other bits when repairing the magnitude bits |
 | `COHERENT_STATS` | 0 | 1: print the statistics above at exit |
 | `COHERENT_DIAG` | 0 | 1: also decode frames that already passed, and count bit errors of both decoders |
 | `COHERENT_DUMP` | 0 | 1 (with `COHERENT_DIAG`): one line per frame with frequency and errors |

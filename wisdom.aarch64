@@ -52,3 +52,8 @@ decode_bits                              generic_generic                        
 coherent_decode                          neon_armv8_neon_simd
 coherent_decode                          generic_armv8_neon_simd
 coherent_decode                          generic_generic
+
+# Soft-decision repair, the weakest bits: measured with starch-benchmark -i 5 (Cortex-A76), 12 / 24 bits
+weakest_bits                             neon_armv8_neon_simd                      # 213 / 398 ns/call
+weakest_bits                             generic_armv8_neon_simd                   # 343 / 645 ns/call
+weakest_bits                             generic_generic                           # 366 / 657 ns/call

@@ -49,6 +49,9 @@
 #ifndef COHERENT_APRIORI_CANDIDATES
 #define COHERENT_APRIORI_CANDIDATES 8  // ... trying at most this many aircraft
 #endif
+#ifndef COHERENT_APRIORI_MAG_FLIPS
+#define COHERENT_APRIORI_MAG_FLIPS 3  // ... flipping at most this many other bits when repairing the magnitude bits
+#endif
 #ifndef COHERENT_REPAIR_MAG_GATE
 #define COHERENT_REPAIR_MAG_GATE 128u // minimum magnitude quality to repair from the magnitude bits
 #endif
@@ -69,6 +72,17 @@
 int coherentDecode(const int16_t *iq, unsigned iq_len, int pos, uint8_t *out, uint16_t *rel,
                    unsigned *q1, unsigned *q2, unsigned *rho2, unsigned *rho2b);
 
+// One frame's bits as the repairs see them, worked out once and shared by
+// softRepair() and aprioriRepair(): set rel and ready = 0; the rest is filled in
+// when a repair first needs it
+struct repairBits {
+    const uint16_t *rel;                    // each bit's reliability
+    int ready;                              // 0: not yet, 1: costs worked out, -1: a half wasn't sliced
+    uint32_t c[MODES_LONG_MSG_BITS];        // each bit's cost: reliability over its half's average
+    int n;                                  // the n cheapest bits so far, in order (up to COHERENT_APRIORI_WEAK),
+    uint32_t key[COHERENT_APRIORI_WEAK];    // each as its cost << 8 | the bit
+};
+
 // Soft-decision repair of bits that fail the CRC, from either decoder: rel holds
 // each bit's reliability (coherent |y_a - y_b|, or the magnitude chips' log power
 // contrast). Flips up to COHERENT_REPAIR_FLIPS of the COHERENT_REPAIR_BITS least
@@ -77,15 +91,15 @@ int coherentDecode(const int16_t *iq, unsigned iq_len, int pos, uint8_t *out, ui
 // most COHERENT_REPAIR_MAX_COST average bits, and the next-best valid combination at
 // least COHERENT_REPAIR_MIN_MARGIN costlier. Returns the number of bits flipped, with
 // msg repaired, or 0.
-int softRepair(uint8_t *msg, const uint16_t *rel);
+int softRepair(uint8_t *msg, struct repairBits *rb);
 
 // Soft-decision repair assuming the frame is a DF17 from a tracked aircraft: for the
 // reliable aircraft whose DF17 DF and address bits differ from the frame's only in
 // bits among its COHERENT_APRIORI_WEAK weakest, those bits are set to the aircraft's,
-// then up to COHERENT_REPAIR_FLIPS of the COHERENT_REPAIR_BITS weakest other bits
-// are flipped. The cheapest valid result over all of them, if confident. Returns the
-// number of bits changed, with msg repaired, or 0.
-int aprioriRepair(uint8_t *msg, const uint16_t *rel);
+// then up to max_flips of the COHERENT_REPAIR_BITS weakest other bits are flipped.
+// The cheapest valid result over all of them, if confident. Returns the number of
+// bits changed, with msg repaired, or 0.
+int aprioriRepair(uint8_t *msg, struct repairBits *rb, int max_flips);
 
 // Complex filter outputs (int32 I, Q, before rounding) at the chip centres
 // pos + 6k, k = 0 .. nchips-1: 16 preamble chips then 2 per data bit.

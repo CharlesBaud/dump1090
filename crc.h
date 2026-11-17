@@ -33,6 +33,7 @@ struct errorinfo {
 
 void modesChecksumInit(int fixBits);
 uint32_t modesChecksum(const uint8_t *msg, int bitlen);
+uint32_t modesBitSyndrome(int bit);
 struct errorinfo *modesChecksumDiagnose(uint32_t syndrome, int bitlen);
 void modesChecksumFix(uint8_t *msg, struct errorinfo *info);
 

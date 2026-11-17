@@ -56,3 +56,7 @@ decode_bits                              generic_generic                        
 coherent_decode                          avx2_x86_avx2                             # 1298 / 606 ns/call
 coherent_decode                          generic_x86_avx2                          # 3675 / 1481 ns/call
 coherent_decode                          generic_generic                           # 4778 / 2041 ns/call
+
+# Soft-decision repair, the weakest bits: no AVX2 version; provisional order
+weakest_bits                             generic_x86_avx2
+weakest_bits                             generic_generic

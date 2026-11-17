@@ -243,11 +243,27 @@ extern starch_decode_bits_regentry starch_decode_bits_registry[];
 starch_decode_bits_regentry * starch_decode_bits_select();
 void starch_decode_bits_set_wisdom( const char * const * received_wisdom );
 
+typedef void (* starch_weakest_bits_ptr) ( const uint32_t * arg0, unsigned arg1, uint32_t arg2, uint32_t * arg3, unsigned * arg4 );
+extern starch_weakest_bits_ptr starch_weakest_bits;
+
+typedef struct {
+    int rank;
+    const char *name;
+    const char *flavor;
+    starch_weakest_bits_ptr callable;
+    int (*flavor_supported)();
+} starch_weakest_bits_regentry;
+
+extern starch_weakest_bits_regentry starch_weakest_bits_registry[];
+starch_weakest_bits_regentry * starch_weakest_bits_select();
+void starch_weakest_bits_set_wisdom( const char * const * received_wisdom );
+
 
 /* flavors and prototypes */
 
 #ifdef STARCH_FLAVOR_ARMV7A_NEON_VFPV4
 int cpu_supports_armv7_neon_vfpv4 (void);
+void starch_weakest_bits_generic_armv7a_neon_vfpv4 ( const uint32_t * arg0, unsigned arg1, uint32_t arg2, uint32_t * arg3, unsigned * arg4 );
 int starch_upsample12_generic_armv7a_neon_vfpv4 ( const int16_t * arg0, int arg1, uint8_t * arg2 );
 int starch_locate_preamble_generic_armv7a_neon_vfpv4 ( const uint8_t * arg0, int arg1, unsigned arg2, uint8_t * arg3 );
 void starch_iqdata_conv_uc8_generic_armv7a_neon_vfpv4 ( const uc8_t * arg0, uint16_t * arg1, unsigned arg2, const int32_t * arg3, int32_t * arg4, double * arg5, double * arg6 );
@@ -280,6 +296,7 @@ void starch_iqdata_conv_sc16q11_neon_armv7a_neon_vfpv4 ( const sc16_t * arg0, ui
 void starch_decode_bits_neon_armv7a_neon_vfpv4 ( const uint8_t * arg0, unsigned arg1, uint8_t * arg2, unsigned * arg3 );
 void starch_coherent_decode_neon_armv7a_neon_vfpv4 ( const int16_t * arg0, int arg1, unsigned arg2, uint8_t * arg3, uint32_t * arg4, uint16_t * arg5 );
 void starch_count_above_u16_neon_armv7a_neon_vfpv4 ( const uint16_t * arg0, unsigned arg1, uint16_t arg2, unsigned * arg3 );
+void starch_weakest_bits_neon_armv7a_neon_vfpv4 ( const uint32_t * arg0, unsigned arg1, uint32_t arg2, uint32_t * arg3, unsigned * arg4 );
 void starch_magnitude_sc16q11_neon_vrsqrte_armv7a_neon_vfpv4 ( const sc16_t * arg0, uint16_t * arg1, unsigned arg2 );
 void starch_magnitude_power_uc8_neon_vrsqrte_armv7a_neon_vfpv4 ( const uc8_t * arg0, uint16_t * arg1, unsigned arg2, double * arg3, double * arg4 );
 void starch_magnitude_sc16_neon_vrsqrte_armv7a_neon_vfpv4 ( const sc16_t * arg0, uint16_t * arg1, unsigned arg2 );
@@ -290,6 +307,7 @@ int starch_read_wisdom (const char * path);
 
 #ifdef STARCH_FLAVOR_ARMV8_NEON_SIMD
 int cpu_supports_armv8_simd (void);
+void starch_weakest_bits_generic_armv8_neon_simd ( const uint32_t * arg0, unsigned arg1, uint32_t arg2, uint32_t * arg3, unsigned * arg4 );
 int starch_upsample12_generic_armv8_neon_simd ( const int16_t * arg0, int arg1, uint8_t * arg2 );
 int starch_locate_preamble_generic_armv8_neon_simd ( const uint8_t * arg0, int arg1, unsigned arg2, uint8_t * arg3 );
 void starch_iqdata_conv_uc8_generic_armv8_neon_simd ( const uc8_t * arg0, uint16_t * arg1, unsigned arg2, const int32_t * arg3, int32_t * arg4, double * arg5, double * arg6 );
@@ -322,6 +340,7 @@ void starch_iqdata_conv_sc16q11_neon_armv8_neon_simd ( const sc16_t * arg0, uint
 void starch_decode_bits_neon_armv8_neon_simd ( const uint8_t * arg0, unsigned arg1, uint8_t * arg2, unsigned * arg3 );
 void starch_coherent_decode_neon_armv8_neon_simd ( const int16_t * arg0, int arg1, unsigned arg2, uint8_t * arg3, uint32_t * arg4, uint16_t * arg5 );
 void starch_count_above_u16_neon_armv8_neon_simd ( const uint16_t * arg0, unsigned arg1, uint16_t arg2, unsigned * arg3 );
+void starch_weakest_bits_neon_armv8_neon_simd ( const uint32_t * arg0, unsigned arg1, uint32_t arg2, uint32_t * arg3, unsigned * arg4 );
 void starch_magnitude_sc16q11_neon_vrsqrte_armv8_neon_simd ( const sc16_t * arg0, uint16_t * arg1, unsigned arg2 );
 void starch_magnitude_power_uc8_neon_vrsqrte_armv8_neon_simd ( const uc8_t * arg0, uint16_t * arg1, unsigned arg2, double * arg3, double * arg4 );
 void starch_magnitude_sc16_neon_vrsqrte_armv8_neon_simd ( const sc16_t * arg0, uint16_t * arg1, unsigned arg2 );
@@ -331,6 +350,7 @@ void starch_mean_power_u16_neon_float_armv8_neon_simd ( const uint16_t * arg0, u
 int starch_read_wisdom (const char * path);
 
 #ifdef STARCH_FLAVOR_GENERIC
+void starch_weakest_bits_generic_generic ( const uint32_t * arg0, unsigned arg1, uint32_t arg2, uint32_t * arg3, unsigned * arg4 );
 int starch_upsample12_generic_generic ( const int16_t * arg0, int arg1, uint8_t * arg2 );
 int starch_locate_preamble_generic_generic ( const uint8_t * arg0, int arg1, unsigned arg2, uint8_t * arg3 );
 void starch_iqdata_conv_uc8_generic_generic ( const uc8_t * arg0, uint16_t * arg1, unsigned arg2, const int32_t * arg3, int32_t * arg4, double * arg5, double * arg6 );
@@ -360,6 +380,7 @@ int starch_read_wisdom (const char * path);
 
 #ifdef STARCH_FLAVOR_X86_AVX2
 int cpu_supports_avx2 (void);
+void starch_weakest_bits_generic_x86_avx2 ( const uint32_t * arg0, unsigned arg1, uint32_t arg2, uint32_t * arg3, unsigned * arg4 );
 int starch_upsample12_generic_x86_avx2 ( const int16_t * arg0, int arg1, uint8_t * arg2 );
 int starch_locate_preamble_generic_x86_avx2 ( const uint8_t * arg0, int arg1, unsigned arg2, uint8_t * arg3 );
 void starch_iqdata_conv_uc8_generic_x86_avx2 ( const uc8_t * arg0, uint16_t * arg1, unsigned arg2, const int32_t * arg3, int32_t * arg4, double * arg5, double * arg6 );

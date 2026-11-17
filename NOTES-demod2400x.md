@@ -357,8 +357,17 @@ output identical to soft-fix-dev.
 * **Cost:** demodulation 3.6 → 9.6 s on the Pi 5, about 90 µs per subtracted
   frame, in float. A cheap gate (a rejected candidate or another preamble
   peak near the frame) passes almost every frame, so it doesn't help.
-* **Status:** prototype, not for merging: float arithmetic, scalar only, no
-  decoy or track checks yet.
+* **Range** (whole 5-minute capture, `--throttle`, positions against
+  soft-fix-dev): 0-50 NM +1.4%, 50-100 +2.0%, 100-150 +2.5%, 150-200
+  +2.3%; the same 111 aircraft with a position and the same furthest
+  (186 NM). Coherent first alone changes the positions by less than 0.1%.
+* **Gating:** the frames found are mostly about as strong as the frame over
+  them (median 1.4 dB weaker), so neither level nor quality picks them out:
+  subtracting only frames of at least -24 dBFS whose first-half quality is
+  below the median for their level keeps 79% of the finds for 42% of the
+  work. No cheap test did better than about 2x.
+* **Status:** parked. A float prototype, scalar only, with no decoy or track
+  checks; worth it only as integer NEON with a gate, for about +2% positions.
 
 ## Raspberry Pi 3B
 

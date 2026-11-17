@@ -227,7 +227,7 @@ stated.
 
 | File | Change | Why |
 |---|---|---|
-| `Makefile` | Adds `-DDEMOD_2400X -DUSE_MAGNITUDE -DDEMOD_2400X_COHERENT`, the new objects, default version `11.2x` | Builds the new demodulator in |
+| `Makefile` | Adds `-DDEMOD_2400X -DUSE_MAGNITUDE -DDEMOD_2400X_COHERENT`, the new objects, default version `11.2y` (`11.2x` on demod-2400x-dev) | Builds the new demodulator in |
 | `dump1090.c` | Options `--no-demod2400x`, `--no-coherent` and `--no-soft-fix` (all on by default); `fifo_create()` with I/Q (16 buffers) or magnitudes (12, as upstream); `demodulate2400x()` or `demodulate2400()`; `demodBehind()`: the stock demodulator on the I/Q buffer's magnitudes while DEMOD_2400X is behind with live input | Chooses the demodulator when running; falls back instead of dropping buffers when the CPU can't keep up |
 | `dump1090.h` | `Modes.demod_2400x`, `Modes.coherent`, `Modes.coherent_repair`; `MODES_MAG_BUFFERS_2400X` (16); includes `demod_2400x.h` | |
 | `fifo.c/h` | Not under `#ifdef`: `fifo_create()` takes `dtype_iq`, and the buffers and overlap copy are twice as large when it is 1; `magbuf_sample()` addresses sample n (`fifo_values_per_sample` is 1 for magnitudes, as before) | The FIFO carries interleaved I/Q for DEMOD_2400X, so it (and the coherent pass) can use the phase |
@@ -272,7 +272,7 @@ doesn't have the two options.
   fall behind. `vcgencmd get_throttled` shows whether it has throttled (0x0 if
   never). When DEMOD_2400X falls behind with live input it hands buffers to
   the stock demodulator until it catches up, instead of dropping them.
-* The default version string is `11.2x`; upstream's is `unknown` (packages
+* The default version string is `11.2y` (`11.2x` on demod-2400x-dev); upstream's is `unknown` (packages
   set it).
 * `--dcfilter` is still not supported (as upstream), although the converters
   now remove DC anyway.

@@ -1,6 +1,6 @@
 PROGNAME=dump1090
 
-DUMP1090_VERSION ?= 11.2x
+DUMP1090_VERSION ?= 11.2y
 
 CFLAGS ?= -O3 -g
 DUMP1090_CFLAGS := -std=c11 -fno-common -Wall -Wmissing-declarations -Werror -Wformat-signedness -W

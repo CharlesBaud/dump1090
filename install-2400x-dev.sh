@@ -47,4 +47,4 @@ systemctl start dump1090-fa
 sleep 5
 pgrep -a dump1090 | cut -c1-60 || true
 grep -o "\"version\" : \"[^\"]*\"" /run/dump1090-fa/receiver.json || true
-echo "(the DEMOD_2400X build reports a version ending in x, e.g. \"11.2x\")"
+echo "(the DEMOD_2400X build reports a version ending in x or y, e.g. \"11.2y\")"

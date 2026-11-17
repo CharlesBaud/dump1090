@@ -31,7 +31,7 @@
 //
 
 struct converter_state {
-    int32_t dc_offset[2];       // DC filter state (I, Q): running mean << 12
+    int32_t dc_offset[2];       // DC filter state (I, Q): running mean << IQ_DC_SHIFT
 };
 
 static void convert_iq_uc8(void *iq_data,

@@ -18,10 +18,11 @@
 #include "compat/compat.h"
 #include "dsp/helpers/demod2400x_coeffs.h"
 
-// DC filter: offset[] holds the running mean << IQ_DC_SHIFT (time constant 4096 samples).
+// DC filter: offset[] holds the running mean << IQ_DC_SHIFT (time constant 16384 samples,
+// about 6.8 ms; a faster filter lets strong frames pull the correction about).
 // The correction is held for a block of IQ_DC_BLOCK samples, then the offset is
 // updated with the block's sum, so the SIMD versions need no serial loop.
-#define IQ_DC_SHIFT 12
+#define IQ_DC_SHIFT 14
 #define IQ_DC_BLOCK 16
 
 // Level is summed as floor(sqrt(magsq << IQ_LEVEL_SHIFT)), i.e. magnitude * 8

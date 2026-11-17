@@ -29,8 +29,11 @@ RTL-SDR capture decoded on a Raspberry Pi 5 unless stated otherwise.
 1. **Input conversion** (`iqdata_conv_uc8/sc16/sc16q11`, `convert.c`).
    Converts the SDR samples to 12-bit signed I/Q and removes DC in the same
    pass. The DC filter holds its correction for blocks of 16 samples
-   (`IQ_DC_BLOCK`) and updates a running mean with a time constant of 4096
-   samples, so SIMD versions need no serial loop. The filter state lives in
+   (`IQ_DC_BLOCK`) and updates a running mean with a time constant of 16384
+   samples (about 6.8 ms; it was 4096, which let strong frames swing the
+   correction: the slower filter gave DF17 +1.5% and positions +2.4% to
+   +4.2% between 50 and 200 NM on the 5-minute Pi 4 capture, at the same
+   CPU), so SIMD versions need no serial loop. The filter state lives in
    `convert.c` (`converter_state`) and is passed in and out (`dc_in`,
    `dc_out`), never static, which also keeps benchmark verification
    repeatable. Mean level and power are computed after DC removal. The FIFO

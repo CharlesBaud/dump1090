@@ -469,7 +469,7 @@ static inline __attribute__((always_inline))
 void iqconv_block_neon(const iq16x16_neon_t r, int16_t * restrict out, int32x2_t *off,
                        uint64x2_t *acc_level, uint64x2_t *acc_power)
 {
-    const int32x2_t corr = vrshr_n_s32(*off, IQ_DC_SHIFT);              // (off + 2048) >> 12
+    const int32x2_t corr = vrshr_n_s32(*off, IQ_DC_SHIFT);              // (off + 8192) >> 14
     const int32x2_t sums = hsum2_s32x4_neon(vpaddlq_s16(vaddq_s16(r.i[0], r.i[1])),
                                             vpaddlq_s16(vaddq_s16(r.q[0], r.q[1])));
     *off = vadd_s32(*off, vsub_s32(sums, vshl_n_s32(corr, 4)));

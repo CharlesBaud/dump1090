@@ -107,13 +107,14 @@ static unsigned bitErrors(const uint8_t *a, const uint8_t *b, int bits)
 
 // The 12 MHz samples are 8-bit log powers (demod_log8()), whatever USE_MAGNITUDE says
 #ifndef PEAMBLE_THRES
-#define PEAMBLE_THRES 70      // (12 L(minp) - sum L(gaps)) / 2, see demod2400x_dsp.h
+#define PEAMBLE_THRES 64      // (12 L(minp) - sum L(gaps)) / 2, see demod2400x_dsp.h
 #endif
-// Preambles below this are searched too, but only for DF11/17/18 frames, whose CRC
-// checks more than the address: at this level most candidates are noise, and the short
-// address/parity frames from them would let false messages through
-#ifndef PREAMBLE_STRICT_THRES
-#define PREAMBLE_STRICT_THRES 86
+// A peak is decoded only if its preamble metric plus twice the decode_bits() quality of
+// its first 56 bits (at the peak, before bestPhase()) reaches this: at this preamble
+// level most peaks are noise, and 56 Manchester bits tell a frame from noise far better
+// than the 4 preamble pulses alone, whatever its DF
+#ifndef FRAME_THRES
+#define FRAME_THRES 285
 #endif
 #ifndef DATA_THRES
 #define DATA_THRES    65      // decode_bits() quality, see demod2400x_dsp.h
@@ -331,14 +332,16 @@ static inline __attribute__((always_inline)) int anyAboveThres8(const uint8_t *m
 }
 
 
-// Try the peak and its two neighbours, keep the one whose first 56 bits look best
+// Keep whichever of the peak and its two neighbours has the best-looking first 56 bits.
+// 'c' comes in with the peak's own (pos, quality, bits) from the frame gate. Ties go to
+// the earliest position.
 static void bestPhase(int peak, const uint8_t *udata, int nt, struct candidate *c)
 {
     uint8_t msg[MODES_SHORT_MSG_BYTES];
 
-    for (int p = peak - 1; p <= peak + 1; p++) {
+    for (int p = peak - 1; p <= peak + 1; p += 2) {
         unsigned q = decodeShortAdbsData(p, udata, nt, msg);
-        if (p == peak - 1 || q > c->quality) {
+        if (q > c->quality || (p < peak && q == c->quality)) {
             c->pos = p;
             c->quality = q;
             memcpy(c->msg, msg, sizeof(msg));
@@ -419,7 +422,7 @@ static int fineTiming(int pos, const uint8_t *msg, int bits, const uint8_t *udat
 // Score, decode and pass one frame on to the rest of dump1090.
 // Returns its length in bits if it was accepted, else 0; *energy gets its signal energy.
 static int emitFrame(const struct mag_buf *mag, const struct candidate *c,
-                     const int16_t *iq, struct staticdata_t *st, int nt, int strict, double *energy)
+                     const int16_t *iq, struct staticdata_t *st, int nt, double *energy)
 {
     static const struct modesMessage zeroMessage;
     struct modesMessage mm;
@@ -583,11 +586,6 @@ static int emitFrame(const struct mag_buf *mag, const struct candidate *c,
         Modes.stats_current.demod_rejected_bad++;
         return 0;
     }
-    // A weak preamble's frame: DF11/17/18 only (see PREAMBLE_STRICT_THRES)
-    if (strict && mm.msgtype != 11 && mm.msgtype != 17 && mm.msgtype != 18) {
-        Modes.stats_current.demod_rejected_bad++;
-        return 0;
-    }
 #ifdef DEMOD_2400X_COHERENT
     // A soft-decision repair is a correction the CRC alone vouches for: not reliable,
     // like a message whose bit errors were repaired
@@ -660,23 +658,6 @@ static int emitFrame(const struct mag_buf *mag, const struct candidate *c,
 }
 
 
-// Could the frame of a weak preamble at 'peak' be DF11, 17 or 18 at any of the
-// positions bestPhase() tries? Only its first 5 bits are decoded (bit = 1 if the
-// first chip is larger, as decode_bits()), which drops most noise candidates cheaply
-static int strictDfOk(int peak, const uint8_t *udata, int nt)
-{
-    for (int t = peak - 1; t <= peak + 1; t++) {
-        const uint8_t *u = &udata[(t % 6) * NU_STRIDE(nt) + t / 6 + 16];
-        int df = 0;
-        for (int i = 0; i < 5; i++)
-            df = (df << 1) | (u[2 * i] > u[2 * i + 1]);
-        if (df == 11 || df == 17 || df == 18)
-            return 1;
-    }
-    return 0;
-}
-
-
 // Search the metric for preambles and decode them. Only peaks at positions
 // 1..limit belong to this buffer; later ones are in the next buffer's overlap
 // and are searched there, so nothing is decoded twice.
@@ -700,27 +681,21 @@ static double searchFrames(const struct mag_buf *mag, struct staticdata_t *st, i
             continue;
         Modes.stats_current.demod_preambles++;
 
-        const int strict = st->metric[p] < PREAMBLE_STRICT_THRES;
-        if (strict && !strictDfOk(p, st->udata, nt))
+        // Frame gate: the preamble and the first 56 bits at the peak together
+        struct candidate c;
+        c.pos = p;
+        c.quality = decodeShortAdbsData(p, st->udata, nt, c.msg);
+        if (st->metric[p] + 2 * c.quality < FRAME_THRES)
             continue;
 
-        struct candidate c;
         bestPhase(p, st->udata, nt, &c);
         if (c.quality < DATA_THRES)
             continue;
 
-        // ... and again at the position bestPhase() chose: the coherent pass and the
-        // repairs could still correct the DF, but at a CPU cost for little gain
-        if (strict) {
-            const int df = c.msg[0] >> 3;
-            if (df != 11 && df != 17 && df != 18)
-                continue;
-        }
-
         demodFrame(&c, st->udata, nt);
 
         double energy;
-        int bits = emitFrame(mag, &c, (const int16_t *) mag->data, st, nt, strict, &energy);
+        int bits = emitFrame(mag, &c, (const int16_t *) mag->data, st, nt, &energy);
         if (bits) {
             energy_sum += energy;
             // Skip to 8 bits before the end of the frame, as demod_2400.c does

@@ -44,6 +44,15 @@ location, user, JSON directory); the packaged files are not changed. Run it
 again after a new build; `sudo sh uninstall-2400x-dev.sh` goes back to the
 packaged decoder installed by apt-get.
 
+For an SDRplay RSP1B instead of an RTL-SDR: install the SDRplay API (3.15),
+`libsoapysdr-dev` and the SoapySDRPlay3 module, build with `make` (it should
+report `SoapySDR support: yes`), then
+`sudo sh install-2400x-receiver-dev.sh rsp1b` (`rsp1b-bias-t` to power a
+masthead preamp). It changes only the receiver lines of
+`/etc/default/dump1090-fa`, saving the RTL-SDR settings once as
+`dump1090-fa.rtl`, and then runs `install-2400x-dev.sh`;
+`sudo sh install-2400x-receiver-dev.sh rtl` switches back.
+
 ## Results
 
 A 60 s capture from a Raspberry Pi 4 with a FlightAware Pro Stick Plus

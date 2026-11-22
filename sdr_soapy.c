@@ -131,6 +131,28 @@ static int soapySetTotalGain(double gain)
     return 0;
 }
 
+// Write the --device-setting key=value pairs to the device
+static int soapyWriteSettings(void)
+{
+    for (unsigned i = 0; i < SOAPY.num_settings; ++i) {
+        const char *element = SOAPY.settings[i];
+        const char *sep = strchr(element, '=');
+        char key[128];
+
+        if (!sep || sep == element || !sep[1] || (size_t) (sep - element) >= sizeof(key)) {
+            fprintf(stderr, "soapy: don't understand a device setting of '%s' (should be formatted as <key>=<value>)\n", element);
+            return -1;
+        }
+        snprintf(key, sizeof(key), "%.*s", (int) (sep - element), element);
+
+        if (SoapySDRDevice_writeSetting(SOAPY.dev, key, sep + 1) != 0) {
+            fprintf(stderr, "soapy: writeSetting(%s,%s) failed: %s\n", key, sep + 1, SoapySDRDevice_lastError());
+            return -1;
+        }
+    }
+    return 0;
+}
+
 // The total gain on the same scale as soapySetTotalGain()
 static double soapyGetTotalGain(void)
 {
@@ -316,20 +338,8 @@ bool soapyOpen(void)
     //
 
     // Device settings
-    for (unsigned i = 0; i < SOAPY.num_settings; ++i) {
-        char *element = SOAPY.settings[i];
-        char *sep = strchr(element, '=');
-        if (!sep || !sep[1]) {
-            fprintf(stderr, "soapy: don't understand a device setting of '%s' (should be formatted as <key>=<value>)\n", element);
-            goto error;
-        }
-        *sep = 0;
-
-        if (SoapySDRDevice_writeSetting(SOAPY.dev, element, sep+1) != 0) {
-            fprintf(stderr, "soapy: writeSetting(%s,%s) failed: %s\n", element, sep+1, SoapySDRDevice_lastError());
-            goto error;
-        }
-    }
+    if (soapyWriteSettings() != 0)
+        goto error;
 
     if (SOAPY.channel) {
         size_t supported_channels = SoapySDRDevice_getNumChannels(SOAPY.dev, SOAPY_SDR_RX);
@@ -537,6 +547,12 @@ void soapyRun()
         fprintf(stderr, "soapy: activateStream failed: %s\n", SoapySDRDevice_lastError());
         return;
     }
+
+    // Write the device settings again now the stream is running: some take effect
+    // only then (SDRplay RSP1B through SoapySDRPlay3: biasT_ctrl=true written only
+    // before the stream starts leaves the bias-T off)
+    if (soapyWriteSettings() != 0)
+        fprintf(stderr, "soapy: device settings not written again after starting the stream\n");
 
     uint8_t* buf;
     const int buffer_elements = MODES_MAG_BUF_SAMPLES; // 131072

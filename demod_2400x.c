@@ -121,6 +121,12 @@ static unsigned bitErrors(const uint8_t *a, const uint8_t *b, int bits)
 #endif
 #define DATA2_THRES   ((4*DATA_THRES)/5)
 
+// A DF17 with one bit corrected by the CRC, from an address not yet heard, adds the
+// address to the ICAO filter only if the corrected bit is among this many least certain
+// bits of the frame. A genuine error usually is (63% of corrections from known
+// aircraft); a wrong correction lands there by chance only 4 times in 112
+#define WEAK_CORRECTION_RANK 4
+
 
 // Static data
 struct staticdata_t {
@@ -419,6 +425,29 @@ static int fineTiming(int pos, const uint8_t *msg, int bits, const uint8_t *udat
 }
 
 
+// Is the one bit the CRC corrected ('corrected' against the demodulated c->msg) among the
+// WEAK_CORRECTION_RANK least certain bits of the frame? Certainty is the log power
+// contrast of each bit's two chips, as for the soft-decision repair from magnitudes.
+static int weakCorrection(const struct candidate *c, const uint8_t *corrected, const uint8_t *udata, int nt)
+{
+    const uint8_t *chip = &udata[(c->pos % 6) * NU_STRIDE(nt) + c->pos / 6 + 16];
+    int bad = -1;
+
+    for (int i = 0; i < MODES_LONG_MSG_BITS && bad < 0; i++)
+        if (((c->msg[i >> 3] ^ corrected[i >> 3]) >> (7 - (i & 7))) & 1)
+            bad = i;
+    if (bad < 0)
+        return 0;
+
+    const int d_bad = abs(chip[2 * bad + 1] - chip[2 * bad]);
+    int rank = 0;
+    for (int i = 0; i < MODES_LONG_MSG_BITS; i++)
+        if (abs(chip[2 * i + 1] - chip[2 * i]) < d_bad)
+            rank++;
+    return rank < WEAK_CORRECTION_RANK;
+}
+
+
 // Score, decode and pass one frame on to the rest of dump1090.
 // Returns its length in bits if it was accepted, else 0; *energy gets its signal energy.
 static int emitFrame(const struct mag_buf *mag, const struct candidate *c,
@@ -601,6 +630,13 @@ static int emitFrame(const struct mag_buf *mag, const struct candidate *c,
         return 0;
     }
     Modes.stats_current.demod_accepted[mm.correctedbits]++;
+
+    // A DF17 with one corrected bit from a new address: list the address if the
+    // corrected bit is one the slicer was unsure of (decodeModesMessage() lists only
+    // clean frames' addresses, and refreshes known ones)
+    if (mm.msgtype == 17 && mm.correctedbits == 1 && !icaoFilterTest(mm.addr) &&
+        weakCorrection(c, mm.msg, st->udata, nt))
+        icaoFilterAdd(mm.addr);
 
 #ifdef DEMOD_2400X_COHERENT
     if (c == mag_c)

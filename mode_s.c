@@ -778,13 +778,16 @@ int decodeModesMessage(struct modesMessage *mm, const unsigned char *in)
             mm->airground = AG_UNCERTAIN;
     }
 
-    if (!mm->correctedbits && (mm->msgtype == 17 || (mm->msgtype == 11 && mm->IID == 0))) {
-        // DF17 ADS-B or DF11 acquisition squitter. Mark as known Mode-S source
+    // Mark the address as a known source: a clean DF17 or DF11 acquisition squitter
+    // adds a new address; any accepted DF11/DF17 refreshes one that is already listed,
+    // so an aircraft whose frames all need correcting does not expire while it is heard
+    if ((!mm->correctedbits && (mm->msgtype == 17 || (mm->msgtype == 11 && mm->IID == 0))) ||
+        ((mm->msgtype == 11 || mm->msgtype == 17) && icaoFilterTest(mm->addr))) {
         icaoFilterAdd(mm->addr);
     }
-    if (!mm->correctedbits && mm->msgtype == 18) {
-         // Mark as known ADS-B (NT) source
-       icaoFilterAdd(mm->addr | ICAO_FILTER_ADSB_NT);
+    if (mm->msgtype == 18 && (!mm->correctedbits || icaoFilterTest(mm->addr | ICAO_FILTER_ADSB_NT))) {
+        // Mark as known ADS-B (NT) source
+        icaoFilterAdd(mm->addr | ICAO_FILTER_ADSB_NT);
     }
 
     // MLAT overrides all other sources

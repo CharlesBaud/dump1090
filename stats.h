@@ -68,6 +68,7 @@ struct stats {
     uint32_t demod_coherent_repaired;   // ... of those, after soft-decision repair
     uint32_t demod_magnitude_repaired;  // soft-decision repair from the magnitude bits (not in rescued)
     uint32_t demod_apriori_repaired;    // soft-decision repair assuming a tracked aircraft (not in rescued)
+    uint32_t demod_ap_repaired;         // weak-bit repair of Address/Parity replies (not in rescued)
 #endif
 
     // Mode A/C demodulator counts:

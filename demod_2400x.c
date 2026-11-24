@@ -127,6 +127,16 @@ static unsigned bitErrors(const uint8_t *a, const uint8_t *b, int bits)
 // aircraft); a wrong correction lands there by chance only 4 times in 112
 #define WEAK_CORRECTION_RANK 4
 
+// An Address/Parity reply (DF0/4/5/16/20/21) has no checksum of its own: its CRC is the
+// address XOR the syndrome of any bit errors, so one bad bit gives a wrong address and
+// the reply is lost. The repair: if CRC ^ syndrome(bit) is an address in the ICAO filter
+// for exactly one of the reply's 3 least certain bits after the DF field, flip that bit.
+// Only the weakest bits, because nothing else checks the result: allowing any bit gives
+// that many more chances of a match with a listed aircraft by chance. Pairs of weak bits
+// would add 40% more repairs but twice the wrong ones. Repaired replies never add or
+// refresh an address
+#define AP_REPAIR_BITS 3
+
 
 // Static data
 struct staticdata_t {
@@ -304,13 +314,19 @@ static void checkMetric(const uint8_t *metric, int mlen) {
 }
 #endif
 
+// The 12 MHz log-power chips of the frame whose bits start at metric position 'pos',
+// two per bit (six rows, one for each 12 MHz phase of the 2 MHz chip rate)
+static inline const uint8_t *frameChips(const uint8_t *udata, int nt, int pos)
+{
+    return &udata[(pos % 6) * NU_STRIDE(nt) + pos / 6 + 16];
+}
 
 // Decode 56 bits starting at metric position 'pos'; returns a quality score (0..176)
 static inline __attribute__((always_inline))
 unsigned decodeShortAdbsData(int pos, const uint8_t * restrict udata, int nt, uint8_t * restrict msg)
 {
     unsigned quality;
-    starch_decode_bits(&udata[(pos % 6) * NU_STRIDE(nt) + pos / 6 + 16], SHORT_FRAME / 8, msg, &quality);
+    starch_decode_bits(frameChips(udata, nt, pos), SHORT_FRAME / 8, msg, &quality);
     return quality;
 }
 
@@ -430,7 +446,7 @@ static int fineTiming(int pos, const uint8_t *msg, int bits, const uint8_t *udat
 // contrast of each bit's two chips, as for the soft-decision repair from magnitudes.
 static int weakCorrection(const struct candidate *c, const uint8_t *corrected, const uint8_t *udata, int nt)
 {
-    const uint8_t *chip = &udata[(c->pos % 6) * NU_STRIDE(nt) + c->pos / 6 + 16];
+    const uint8_t *chip = frameChips(udata, nt, c->pos);
     int bad = -1;
 
     for (int i = 0; i < MODES_LONG_MSG_BITS && bad < 0; i++)
@@ -447,6 +463,47 @@ static int weakCorrection(const struct candidate *c, const uint8_t *corrected, c
     return rank < WEAK_CORRECTION_RANK;
 }
 
+
+// Weak-bit repair of an Address/Parity reply (see AP_REPAIR_BITS). Returns 1 if a bit of
+// c->msg was flipped, or 0
+static int apRepair(struct candidate *c, const uint8_t *udata, int nt)
+{
+    const int df = c->msg[0] >> 3;
+    if (!(df == 0 || df == 4 || df == 5 || df == 16 || df == 20 || df == 21))
+        return 0;
+    const int nb = df >= 16 ? MODES_LONG_MSG_BITS : MODES_SHORT_MSG_BITS;
+    const uint8_t *chip = frameChips(udata, nt, c->pos);
+
+    // The weakest bits, weakest first (the earlier bit on a tie)
+    int w[AP_REPAIR_BITS], dw[AP_REPAIR_BITS], n = 0;
+    for (int i = 5; i < nb; i++) {
+        const int d = abs(chip[2 * i + 1] - chip[2 * i]);
+        if (n == AP_REPAIR_BITS && d >= dw[n - 1])
+            continue;
+        int k = n < AP_REPAIR_BITS ? n++ : n - 1;
+        for (; k > 0 && dw[k - 1] > d; k--) {
+            w[k] = w[k - 1];
+            dw[k] = dw[k - 1];
+        }
+        w[k] = i;
+        dw[k] = d;
+    }
+
+    // Exactly one weak bit must give a listed address (a short frame's bits are the
+    // last 56 of modesBitSyndrome()'s 112)
+    const uint32_t crc = modesChecksum(c->msg, nb);
+    int bit = -1;
+    for (int k = 0; k < n; k++)
+        if (icaoFilterTest(crc ^ modesBitSyndrome(w[k] + MODES_LONG_MSG_BITS - nb))) {
+            if (bit >= 0)
+                return 0;
+            bit = w[k];
+        }
+    if (bit < 0)
+        return 0;
+    c->msg[bit >> 3] ^= 0x80 >> (bit & 7);
+    return 1;
+}
 
 // Score, decode and pass one frame on to the rest of dump1090.
 // Returns its length in bits if it was accepted, else 0; *energy gets its signal energy.
@@ -553,7 +610,7 @@ static int emitFrame(const struct mag_buf *mag, const struct candidate *c,
     // below the gate most candidates are noise, and the search costs CPU
     if (Modes.coherent && Modes.coherent_repair && score < SR_ACCEPT_THRESHOLD &&
         mag_c->quality >= COHERENT_REPAIR_MAG_GATE) {
-        const uint8_t *chip = &st->udata[(mag_c->pos % 6) * NU_STRIDE(nt) + mag_c->pos / 6 + 16];
+        const uint8_t *chip = frameChips(st->udata, nt, mag_c->pos);
         for (int i = 0; i < MODES_LONG_MSG_BITS; i++) {
             const int d = chip[2 * i + 1] - chip[2 * i];
             mrel[i] = (uint16_t) (d < 0 ? -d : d);
@@ -592,6 +649,22 @@ static int emitFrame(const struct mag_buf *mag, const struct candidate *c,
                 score = sr;
                 repaired = changed;
                 Modes.stats_current.demod_apriori_repaired++;
+            }
+        }
+    }
+
+    // Last of all, an Address/Parity reply from a tracked aircraft with a weak bit wrong
+    if (Modes.coherent && Modes.coherent_repair && score < SR_ACCEPT_THRESHOLD) {
+        struct candidate rep = *mag_c;
+        const int flips = apRepair(&rep, st->udata, nt);
+        if (flips) {
+            const int sr = scoreModesMessage(rep.msg);
+            if (sr >= SR_ACCEPT_THRESHOLD) {
+                cc = rep;
+                c = &cc;
+                score = sr;
+                repaired = flips;
+                Modes.stats_current.demod_ap_repaired++;
             }
         }
     }

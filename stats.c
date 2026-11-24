@@ -102,6 +102,7 @@ void display_stats(struct stats *st) {
                 printf("      %12u after soft-decision repair\n",           st->demod_coherent_repaired);
                 printf("  %12u soft-decision repairs from the magnitude bits\n", st->demod_magnitude_repaired);
                 printf("  %12u soft-decision repairs assuming a tracked aircraft\n", st->demod_apriori_repaired);
+                printf("  %12u weak-bit repairs of address/parity replies\n", st->demod_ap_repaired);
             }
         }
 #endif
@@ -355,6 +356,7 @@ void add_stats(const struct stats *st1, const struct stats *st2, struct stats *t
     target->demod_coherent_repaired = st1->demod_coherent_repaired + st2->demod_coherent_repaired;
     target->demod_magnitude_repaired = st1->demod_magnitude_repaired + st2->demod_magnitude_repaired;
     target->demod_apriori_repaired = st1->demod_apriori_repaired + st2->demod_apriori_repaired;
+    target->demod_ap_repaired = st1->demod_ap_repaired + st2->demod_ap_repaired;
 #endif
     target->demod_modeac = st1->demod_modeac + st2->demod_modeac;
 

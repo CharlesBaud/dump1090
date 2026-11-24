@@ -364,7 +364,7 @@ static void showHelp(void)
 #endif
 #ifdef DEMOD_2400X_COHERENT
 "--no-coherent            Disable the DEMOD_2400X coherent second pass\n"
-"--no-soft-fix            Disable soft-decision repair of DF17/18 in the coherent pass\n"
+"--no-soft-fix            Disable soft-decision repair of DF17/18 and weak-bit repair of address/parity replies\n"
 #endif
 "--lat <latitude>         Reference/receiver latitude for surface positions\n"
 "--lon <longitude>        Reference/receiver longitude for surface positions\n"

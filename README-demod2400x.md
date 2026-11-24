@@ -13,7 +13,8 @@ be switched off when running:
   converters, magnitudes in the FIFO; output byte-identical to upstream `dev`);
 * `--no-coherent`: DEMOD_2400X without the coherent pass;
 * `--no-soft-fix`: without the soft-decision repair of DF17/18 (from the
-  coherent or the magnitude bits).
+  coherent or the magnitude bits) and the weak-bit repair of address/parity
+  replies.
 
 In outline:
 
